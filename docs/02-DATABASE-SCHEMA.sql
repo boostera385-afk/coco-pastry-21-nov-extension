@@ -1,0 +1,1 @@
+-- Moved: the live schema is supabase/migrations/20261123000000_init.sql

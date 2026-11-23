@@ -1,0 +1,7 @@
+.claude/settings.local.json
+.playwright-mcp/
+node_modules/
+.vercel/
+.env*
+*.log
+gv-samples*.json

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Coco Voice Tracker</title>
+  <link rel="stylesheet" href="../shared/theme.css">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <h1>Coco <span>Voice</span></h1>
+    <div class="seg" id="range">
+      <button data-r="today" class="on">Today</button>
+      <button data-r="7d">7 days</button>
+      <button data-r="30d">30 days</button>
+    </div>
+  </header>
+
+  <section class="grid">
+    <div class="card kpi hero wide">
+      <div class="label">Outbound reaches</div>
+      <div class="value" id="outboundReaches">0</div>
+      <div class="sub">unique contacts · once per contact per day</div>
+    </div>
+    <div class="card kpi"><div class="label">Calls out</div><div class="value" id="outboundCalls">0</div><div class="sub" id="connected">0 connected</div></div>
+    <div class="card kpi"><div class="label">Texts out</div><div class="value" id="outboundTexts">0</div><div class="sub">&nbsp;</div></div>
+    <div class="card kpi"><div class="label">Calls in</div><div class="value" id="inboundCalls">0</div><div class="sub" id="missed">0 missed</div></div>
+    <div class="card kpi"><div class="label">Texts in</div><div class="value" id="inboundTexts">0</div><div class="sub" id="vm">0 voicemails</div></div>
+  </section>
+
+  <section class="card status">
+    <div><span class="dot" id="dot"></span> <b id="statusText">Checking…</b></div>
+    <div class="small muted" id="statusSub"></div>
+    <div class="small muted" id="since"></div>
+  </section>
+
+  <footer>
+    <button class="btn" id="sync">Sync now</button>
+    <button class="btn dark" id="openDash">Dashboard</button>
+    <a href="#" id="settings" class="small">Settings</a>
+  </footer>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

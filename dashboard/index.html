@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Coco Voice Dashboard</title>
+  <link rel="stylesheet" href="theme.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="login" class="login" hidden>
+    <div class="card">
+      <h1>Coco <span>Voice</span></h1>
+      <p>Sign in with your work email. We'll send you a login link.</p>
+      <form id="loginForm">
+        <label for="email">Email</label>
+        <input id="email" type="email" required autocomplete="email">
+        <button class="btn" type="submit">Send login link</button>
+        <p id="loginMsg" class="small"></p>
+      </form>
+    </div>
+  </div>
+
+  <div id="app" hidden>
+    <nav class="top">
+      <a class="brand" href="#/overview">Coco <span>Voice</span></a>
+      <div class="links" id="navLinks"></div>
+      <div class="me"><span id="meEmail" class="small"></span> <button class="btn dark" id="logout">Sign out</button></div>
+    </nav>
+
+    <section class="hero-band" id="filters">
+      <div class="seg" id="range">
+        <button data-r="today">Today</button>
+        <button data-r="7d" class="on">7 days</button>
+        <button data-r="30d">30 days</button>
+        <button data-r="custom">Custom</button>
+      </div>
+      <span id="customRange" hidden>
+        <input type="date" id="from"> <input type="date" id="to">
+      </span>
+      <select id="agentFilter"><option value="">All agents</option></select>
+      <span class="small tz" id="tzLabel"></span>
+    </section>
+
+    <main id="view"></main>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="config.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
