@@ -5,3 +5,4 @@ node_modules/
 .env*
 *.log
 gv-samples*.json
+supabase/.temp/
