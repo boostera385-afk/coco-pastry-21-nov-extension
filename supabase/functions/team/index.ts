@@ -37,7 +37,7 @@ function tempPassword() {
 async function newAgentToken(name: string, email: string | null, accountType: string) {
   const token = 'coco_' + hex(crypto.getRandomValues(new Uint8Array(24)));
   const { data, error } = await admin.from('agents').insert({
-    name, email, account_type: accountType === 'workspace' ? 'workspace' : 'personal',
+    name, email, account_type: accountType === 'personal' ? 'personal' : 'workspace',
     token_hash: await sha256(token), token_hint: token.slice(-4),
   }).select('id').single();
   if (error) throw new Error(error.message);
@@ -93,7 +93,7 @@ Deno.serve(async (req) => {
       let agentId = (body.agent_id as string) || null;
       let token: string | null = null;
       if (role === 'agent' && !agentId && body.create_agent !== false) {
-        ({ agentId, token } = await newAgentToken(name, email, String(body.account_type ?? 'personal')));
+        ({ agentId, token } = await newAgentToken(name, email, String(body.account_type ?? 'workspace')));
       }
       const { error: pErr } = await admin.from('profiles').upsert({ user_id: created.user.id, role, agent_id: agentId });
       if (pErr) {

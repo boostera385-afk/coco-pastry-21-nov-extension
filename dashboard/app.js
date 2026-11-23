@@ -614,7 +614,7 @@ async function renderSettings(view) {
           ${(agents || []).map((a) => `<option value="${a.id}">Link to existing agent: ${esc(a.name)}</option>`).join('')}
           <option value="none">No tracking (dashboard login only)</option>
         </select></div>
-        <div><label>Google Voice account</label><select id="cType"><option value="personal">Personal Google Voice</option><option value="workspace">Google Workspace Voice</option></select></div>
+        <div><label>Google Voice account</label><select id="cType"><option value="workspace" selected>Google Workspace Voice</option><option value="personal">Personal Google Voice</option></select></div>
       </div>
       <div class="row"><div><button class="btn" id="createUser">Create user</button></div></div>
       <div id="credOut"></div>
@@ -635,7 +635,7 @@ async function renderSettings(view) {
       <div class="row" style="margin-top:12px">
         <div><label>Name</label><input id="nName" placeholder="tracking-only agent (no login)"></div>
         <div><label>Email</label><input id="nEmail" type="email" placeholder="optional"></div>
-        <div><label>Account</label><select id="nType"><option value="personal">Personal Google Voice</option><option value="workspace">Google Workspace Voice</option></select></div>
+        <div><label>Account</label><select id="nType"><option value="workspace" selected>Google Workspace Voice</option><option value="personal">Personal Google Voice</option></select></div>
         <div><button class="btn dark" id="addAgent">Add agent &amp; create token</button></div>
       </div>
       <div id="tokenOut"></div>
