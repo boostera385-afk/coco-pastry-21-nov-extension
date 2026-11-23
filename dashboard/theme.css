@@ -1,5 +1,7 @@
-/* Coco theme — after zero-restaurant.com: black surfaces, amber accent,
-   Oswald uppercase headings, DM Sans body. Shared by popup, options and dashboard. */
+/* Coco theme — after zero-restaurant.com: black surfaces, Oswald uppercase headings, DM Sans body,
+   and the site's three brand colors: FOOD yellow, SNACK green, BEVERAGE red.
+   Meaning in the app: yellow = outbound / primary, green = inbound / good, red = missed / alerts.
+   Shared by popup, options and dashboard (dashboard/theme.css is a copy). */
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=Oswald:wght@500;600&display=swap');
 
 :root {
@@ -9,10 +11,13 @@
   --line: #262626;
   --text: #fff;
   --muted: #c0c0c0;
-  --accent: #ffba00;
+  --yellow: #ffba00;   /* FOOD */
+  --green: #00843d;    /* SNACK */
+  --red: #cc3433;      /* BEVERAGE */
+  --accent: var(--yellow);
   --accent-ink: #000;
-  --danger: #cc3433;
-  --ok: #3fb950;
+  --danger: var(--red);
+  --ok: var(--green);
   --radius: 10px;
   --head: 'Oswald', 'Arial Narrow', sans-serif;
   --body: 'DM Sans', system-ui, sans-serif;
@@ -22,18 +27,39 @@
 body { margin: 0; background: var(--bg); color: var(--muted); font: 14px/1.5 var(--body); }
 h1, h2, h3 { font-family: var(--head); text-transform: uppercase; color: var(--text); font-weight: 600; letter-spacing: .02em; margin: 0; }
 a { color: var(--accent); text-decoration: none; }
+
+/* three-color brand stripe (food / snack / beverage) */
+.brand-stripe { display: flex; height: 6px; }
+.brand-stripe i { flex: 1; }
+.brand-stripe i:nth-child(1) { background: var(--yellow); }
+.brand-stripe i:nth-child(2) { background: var(--green); }
+.brand-stripe i:nth-child(3) { background: var(--red); }
+
+/* short yellow bar under section headings, like the site */
+.bar-under::after { content: ''; display: block; width: 64px; height: 3px; background: var(--yellow); margin-top: 8px; }
+
 .btn { display: inline-flex; align-items: center; gap: 6px; border: 0; border-radius: 8px; padding: 8px 14px;
   font: 500 13px var(--body); cursor: pointer; background: var(--accent); color: var(--accent-ink); }
 .btn.dark { background: var(--surface-2); color: var(--text); border: 1px solid var(--line); }
 .btn:disabled { opacity: .5; cursor: default; }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; }
-.kpi .label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
-.kpi .value { font: 600 26px/1.1 var(--head); color: var(--text); margin-top: 4px; }
+
+/* KPI tiles — "Free Delivery" card style: dark card + colored icon square */
+.kpi { display: flex; gap: 12px; align-items: center; background: var(--surface-2); }
+.kpi .ico { flex: none; width: 42px; height: 42px; border-radius: 8px; display: grid; place-items: center; background: var(--yellow); color: #000; }
+.kpi .ico svg { width: 22px; height: 22px; }
+.kpi.g .ico { background: var(--green); color: #fff; }
+.kpi.r .ico { background: var(--red); color: #fff; }
+.kpi .txt { min-width: 0; }
+.kpi .label { font: 500 13px/1.2 var(--head); text-transform: uppercase; letter-spacing: .04em; color: var(--text); }
+.kpi .value { font: 600 26px/1.1 var(--head); color: var(--text); margin-top: 2px; }
 .kpi .sub { font-size: 12px; color: var(--muted); }
-.kpi.hero { background: var(--accent); border-color: var(--accent); }
+.kpi.hero { background: var(--yellow); border-color: var(--yellow); }
+.kpi.hero .ico { background: #000; color: var(--yellow); }
 .kpi.hero .label, .kpi.hero .value, .kpi.hero .sub { color: var(--accent-ink); }
+
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
-.dot.ok { background: var(--ok); } .dot.warn { background: var(--accent); } .dot.bad { background: var(--danger); }
+.dot.ok { background: var(--ok); } .dot.warn { background: var(--yellow); } .dot.bad { background: var(--danger); }
 .seg { display: inline-flex; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
 .seg button { background: none; border: 0; color: var(--muted); padding: 5px 10px; border-radius: 6px; cursor: pointer; font: 500 12px var(--body); }
 .seg button.on { background: var(--accent); color: var(--accent-ink); }

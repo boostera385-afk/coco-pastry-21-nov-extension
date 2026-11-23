@@ -19,6 +19,8 @@ async function render() {
   for (const k of ['outboundReaches', 'outboundCalls', 'outboundTexts', 'inboundCalls', 'inboundTexts']) $(k).textContent = r[k];
   $('connected').textContent = `${r.connectedCalls} connected`;
   $('missed').textContent = `${r.missedCalls} missed`;
+  $('callsInTile').classList.toggle('r', r.missedCalls > 0);
+  $('callsInTile').classList.toggle('g', !r.missedCalls);
   $('vm').textContent = `${r.voicemails} voicemails`;
 
   const configured = st.supabaseUrl && st.agentToken;

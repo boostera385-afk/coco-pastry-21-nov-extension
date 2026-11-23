@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
+  <div class="brand-stripe" aria-hidden="true"><i></i><i></i><i></i></div>
   <header>
     <h1>Coco <span>Voice</span></h1>
     <div class="seg" id="range">
@@ -18,14 +19,13 @@
 
   <section class="grid">
     <div class="card kpi hero wide">
-      <div class="label">Outbound reaches</div>
-      <div class="value" id="outboundReaches">0</div>
-      <div class="sub">unique contacts · once per contact per day</div>
+      <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M17 8h5M19.5 5.5 22 8l-2.5 2.5"/></svg></div>
+      <div class="txt"><div class="label">Outbound reaches</div><div class="value" id="outboundReaches">0</div><div class="sub">unique contacts · once per contact per day</div></div>
     </div>
-    <div class="card kpi"><div class="label">Calls out</div><div class="value" id="outboundCalls">0</div><div class="sub" id="connected">0 connected</div></div>
-    <div class="card kpi"><div class="label">Texts out</div><div class="value" id="outboundTexts">0</div><div class="sub">&nbsp;</div></div>
-    <div class="card kpi"><div class="label">Calls in</div><div class="value" id="inboundCalls">0</div><div class="sub" id="missed">0 missed</div></div>
-    <div class="card kpi"><div class="label">Texts in</div><div class="value" id="inboundTexts">0</div><div class="sub" id="vm">0 voicemails</div></div>
+    <div class="card kpi y"><div class="ico">↗</div><div class="txt"><div class="label">Calls out</div><div class="value" id="outboundCalls">0</div><div class="sub" id="connected">0 connected</div></div></div>
+    <div class="card kpi y"><div class="ico">✉</div><div class="txt"><div class="label">Texts out</div><div class="value" id="outboundTexts">0</div><div class="sub">sent</div></div></div>
+    <div class="card kpi g" id="callsInTile"><div class="ico">↙</div><div class="txt"><div class="label">Calls in</div><div class="value" id="inboundCalls">0</div><div class="sub" id="missed">0 missed</div></div></div>
+    <div class="card kpi g"><div class="ico">✉</div><div class="txt"><div class="label">Texts in</div><div class="value" id="inboundTexts">0</div><div class="sub" id="vm">0 voicemails</div></div></div>
   </section>
 
   <section class="card status">

@@ -1,4 +1,8 @@
-body { width: 340px; padding: 14px; }
+body { width: 360px; padding: 0 14px 14px; }
+.brand-stripe { margin: 0 -14px 12px; }
+.kpi { padding: 10px; gap: 10px; }
+.kpi .ico { width: 34px; height: 34px; font: 700 16px var(--body); }
+.kpi .value { font-size: 22px; }
 header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
 header h1 { font-size: 20px; }
 header h1 span { color: var(--accent); }

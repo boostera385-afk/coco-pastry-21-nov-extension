@@ -291,13 +291,28 @@ function barChart(daily) {
     const x = P + i * bw + bw / 2;
     const inb = Number(d.inbound_calls) + Number(d.inbound_texts);
     s += `<rect x="${x - bar - 1}" y="${y(d.outbound_reaches)}" width="${bar}" height="${H - P - y(d.outbound_reaches)}" fill="#ffba00" rx="2"><title>${fmtDay(d.day)}: ${d.outbound_reaches} outbound reaches</title></rect>`;
-    s += `<rect x="${x + 1}" y="${y(inb)}" width="${bar}" height="${H - P - y(inb)}" fill="#8a8a8a" rx="2"><title>${fmtDay(d.day)}: ${inb} inbound calls + texts</title></rect>`;
+    s += `<rect x="${x + 1}" y="${y(inb)}" width="${bar}" height="${H - P - y(inb)}" fill="#00843d" rx="2"><title>${fmtDay(d.day)}: ${inb} inbound calls + texts</title></rect>`;
     if (i % every === 0) s += `<text x="${x}" y="${H - 8}" fill="#c0c0c0" font-size="10" text-anchor="middle">${fmtDay(d.day)}</text>`;
   });
-  return `${s}</svg><div class="legend"><span><i style="background:#ffba00"></i>Outbound reaches</span><span><i style="background:#8a8a8a"></i>Inbound calls + texts</span></div>`;
+  return `${s}</svg><div class="legend"><span><i style="background:#ffba00"></i>Outbound reaches</span><span><i style="background:#00843d"></i>Inbound calls + texts</span></div>`;
 }
 
-const kpi = (label, value, sub = '', hero = false) => `<div class="card kpi${hero ? ' hero' : ''}"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`;
+// Simple line icons for KPI tiles (stroke = currentColor)
+const svg = (d) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+const ICON = {
+  reach: svg('<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M17 8h5M19.5 5.5 22 8l-2.5 2.5"/>'),
+  callOut: svg('<path d="M5 4h3l2 5-2.5 1.5a11 11 0 0 0 6 6L15 14l5 2v3a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2"/><path d="M15 3h6v6M21 3l-6 6"/>'),
+  callIn: svg('<path d="M5 4h3l2 5-2.5 1.5a11 11 0 0 0 6 6L15 14l5 2v3a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2"/><path d="M21 3l-6 6M15 3v6h6"/>'),
+  textOut: svg('<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/><path d="M9 12h6M13 10l2 2-2 2"/>'),
+  textIn: svg('<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/><path d="M15 12H9M11 10l-2 2 2 2"/>'),
+  clock: svg('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
+  star: svg('<path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/>'),
+  check: svg('<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>'),
+};
+/** tone: 'y' outbound/primary, 'g' inbound/good, 'r' missed/alerts */
+const kpi = (label, value, sub = '', { hero = false, tone = 'y', icon = ICON.check } = {}) =>
+  `<div class="card kpi ${tone}${hero ? ' hero' : ''}"><div class="ico">${icon}</div>`
+  + `<div class="txt"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div></div>`;
 
 async function renderOverview(view) {
   const agent = isMgr() ? state.agent || null : state.agentId;
@@ -310,12 +325,12 @@ async function renderOverview(view) {
   view.innerHTML = `
     <div class="section-title"><h2>Activity · ${esc(period)}</h2><button class="btn dark" id="csv">Download report (CSV)</button></div>
     <div class="kpis">
-      ${kpi('Outbound reaches', n(t.outbound_reaches), 'unique contacts, once per day', true)}
-      ${kpi('Calls out', n(t.outbound_calls), t.outbound_calls ? `${pct(t.connected_calls, t.outbound_calls)} connected` : 'no calls yet')}
-      ${kpi('Texts out', n(t.outbound_texts))}
-      ${kpi('Calls in', n(t.inbound_calls), `${n(t.missed_calls)} missed`)}
-      ${kpi('Texts in', n(t.inbound_texts), `${n(t.voicemails)} voicemails`)}
-      ${kpi('Reply rate', t.response_rate == null ? '—' : `${t.response_rate.toFixed(0)}%`, `avg reply ${mins(t.avg_reply_min)}`)}
+      ${kpi('Outbound reaches', n(t.outbound_reaches), 'unique contacts, once per day', { hero: true, icon: ICON.reach })}
+      ${kpi('Calls out', n(t.outbound_calls), t.outbound_calls ? `${pct(t.connected_calls, t.outbound_calls)} connected` : 'no calls yet', { icon: ICON.callOut })}
+      ${kpi('Texts out', n(t.outbound_texts), 'sent', { icon: ICON.textOut })}
+      ${kpi('Calls in', n(t.inbound_calls), `${n(t.missed_calls)} missed`, { tone: t.missed_calls ? 'r' : 'g', icon: ICON.callIn })}
+      ${kpi('Texts in', n(t.inbound_texts), `${n(t.voicemails)} voicemails`, { tone: 'g', icon: ICON.textIn })}
+      ${kpi('Reply rate', t.response_rate == null ? '—' : `${t.response_rate.toFixed(0)}%`, `avg reply ${mins(t.avg_reply_min)}`, { tone: t.avg_reply_min > 60 ? 'r' : 'g', icon: ICON.clock })}
     </div>
     <div class="two">
       <div class="card chart"><h3>Daily trend</h3>${barChart(daily)}</div>
@@ -465,9 +480,9 @@ async function renderReports(view) {
       <div><span class="small">Schedule: <b style="color:var(--text)">${esc(sched)}</b> (${TZ_NAMES[tz()]}) · last run ${ago(s.last_analysis_run_at)}${lastReq?.[0]?.status === 'pending' ? ' · request pending' : ''}</span>
       <button class="btn" id="runNow">Run analysis now</button></div></div>
     <div class="kpis">
-      ${kpi('Conversations reviewed', n(list.length), '', true)}
-      ${kpi('Average score', avg, 'out of 10')}
-      ${Object.entries(outcomes).slice(0, 4).map(([k, v]) => kpi(esc(k.replace('_', ' ')), n(v), pct(v, list.length))).join('')}
+      ${kpi('Conversations reviewed', n(list.length), 'by Claude', { hero: true, icon: ICON.check })}
+      ${kpi('Average score', avg, 'out of 10', { tone: avg !== '—' && Number(avg) < 6 ? 'r' : 'g', icon: ICON.star })}
+      ${Object.entries(outcomes).slice(0, 4).map(([k, v]) => kpi(esc(k.replace('_', ' ')), n(v), pct(v, list.length), { tone: /not_interested|opted_out|no_reply/.test(k) ? 'r' : /booked|interested/.test(k) ? 'g' : 'y' })).join('')}
     </div>
     <div class="two">
       <div class="card"><h3>Most common mistakes</h3>
