@@ -6,3 +6,4 @@ node_modules/
 *.log
 gv-samples*.json
 supabase/.temp/
+.email-preview.html

@@ -5,6 +5,10 @@ h1 span, .brand span { color: var(--accent); }
 .login { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
 .login .card { width: 100%; max-width: 380px; padding: 28px; }
 .login .btn { margin-top: 14px; width: 100%; justify-content: center; }
+.login .tabs { display: flex; margin-top: 8px; }
+.login .tabs button { flex: 1; }
+.link-under { display: block; margin-top: 12px; text-align: center; }
+#loginMsg { margin-top: 12px; color: var(--text); }
 
 /* top nav — black bar like the reference site */
 nav.top { display: flex; align-items: center; gap: 24px; padding: 14px 24px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }

@@ -48,13 +48,48 @@ async function rpc(name, args) {
 }
 
 // ---------- auth ----------
+// Supported: password sign-in, forgot/reset password, email link, 8-digit email code,
+// set/change password (Account page). Email links arrive as ?token_hash=...&type=...
+const OTP_TYPES = ['email', 'magiclink', 'signup', 'invite', 'recovery', 'email_change'];
+const msg = (t) => { $('#loginMsg').textContent = t; };
+const friendly = (error) => {
+  const m = error?.message || String(error);
+  if (/rate limit/i.test(m)) return 'Too many emails were sent in the last hour. Use the code or link from your latest email, or try again later.';
+  if (/invalid login credentials/i.test(m)) return 'Wrong email or password. If you never set a password, use "Email link / code" or "Forgot password?".';
+  if (/email not confirmed/i.test(m)) return 'Please confirm your email first. Use "Email link / code" to get a new confirmation email.';
+  return m;
+};
+
+const pwProblem = (p) => (p.length < 6 ? 'Use at least 6 characters.' : !/[a-zA-Z]/.test(p) || !/[0-9]/.test(p) ? 'Use a mix of letters and numbers.' : '');
+
+let passwordMode = null; // 'recovery' | 'invite' -> ask for a new password before entering the app
+
+async function handleAuthRedirect() {
+  const q = new URLSearchParams(location.search);
+  const h = new URLSearchParams(location.hash.replace(/^#/, ''));
+  const clean = () => history.replaceState(null, '', location.pathname + (location.hash.startsWith('#/') ? location.hash : ''));
+  const errText = q.get('error_description') || h.get('error_description');
+  if (errText) { clean(); return `That link didn't work: ${errText.replace(/\+/g, ' ')}. Request a new one below.`; }
+  const tokenHash = q.get('token_hash');
+  const type = q.get('type');
+  if (!tokenHash) return '';
+  msg('Verifying your link…');
+  const { error } = await sb.auth.verifyOtp({ token_hash: tokenHash, type: OTP_TYPES.includes(type) ? type : 'email' });
+  clean();
+  if (error) return `That link has expired or was already used. Request a new one below. (${error.message})`;
+  if (type === 'recovery' || type === 'invite') passwordMode = type;
+  return '';
+}
+
 async function boot() {
+  const linkError = await handleAuthRedirect();
   const { data: { session } } = await sb.auth.getSession();
-  if (!session) return showLogin();
+  if (!session) return showLogin(linkError);
+  if (passwordMode) return showNewPassword();
   state.user = session.user;
   const { data: prof } = await sb.from('profiles').select('role, agent_id').eq('user_id', state.user.id).maybeSingle();
   if (!prof) {
-    showLogin(`Signed in as ${state.user.email}, but you don't have access yet. Ask an admin to add you in Settings → Users.`);
+    showLogin(`Signed in as ${state.user.email}, but you don't have access yet. Ask an admin to add you in Settings → Users, then reload this page.`, true);
     return;
   }
   state.role = prof.role;
@@ -68,29 +103,113 @@ async function boot() {
 
   $('#login').hidden = true;
   $('#app').hidden = false;
-  $('#meEmail').textContent = `${state.user.email} · ${state.role}`;
+  $('#meEmail').innerHTML = `<a href="#/account">${esc(state.user.email)}</a> · ${esc(state.role)}`;
   $('#tzLabel').textContent = `${TZ_NAMES[tz()] || tz()} time`;
   $('#agentFilter').innerHTML = '<option value="">All agents</option>'
     + state.agents.map((a) => `<option value="${a.id}">${esc(a.name)}${a.active ? '' : ' (inactive)'}</option>`).join('');
   $('#agentFilter').hidden = !isMgr();
 
-  const links = [['overview', 'Overview'], ...(isMgr() ? [['conversations', 'Conversations']] : []), ['reports', isMgr() ? 'Reports' : 'My coaching'], ...(state.role === 'admin' ? [['settings', 'Settings']] : [])];
+  const links = [['overview', 'Overview'], ...(isMgr() ? [['conversations', 'Conversations']] : []), ['reports', isMgr() ? 'Reports' : 'My coaching'], ...(state.role === 'admin' ? [['settings', 'Settings']] : []), ['account', 'Account']];
   $('#navLinks').innerHTML = links.map(([k, l]) => `<a href="#/${k}" data-k="${k}">${l}</a>`).join('');
   route();
 }
 
-function showLogin(msg = '') {
+function showLogin(text = '', signedInNoAccess = false) {
   $('#app').hidden = true;
   $('#login').hidden = false;
-  $('#loginMsg').textContent = msg;
+  $('#newPwForm').hidden = true;
+  $('#signinBlock').hidden = signedInNoAccess;
+  $('#loginIntro').textContent = 'Sign in to your team dashboard.';
+  msg(text);
+  if (signedInNoAccess) {
+    const b = Object.assign(document.createElement('button'), { className: 'btn dark', textContent: 'Sign out' });
+    b.onclick = async () => { await sb.auth.signOut(); location.reload(); };
+    $('#loginMsg').append(document.createElement('br'), b);
+  }
 }
-$('#loginForm').addEventListener('submit', async (e) => {
+
+function showNewPassword() {
+  $('#app').hidden = true;
+  $('#login').hidden = false;
+  $('#signinBlock').hidden = true;
+  $('#newPwForm').hidden = false;
+  $('#loginIntro').textContent = passwordMode === 'invite' ? 'Welcome! Choose a password for your account.' : 'Choose a new password for your account.';
+  msg('');
+  $('#newPw').focus();
+}
+
+function setTab(t) {
+  document.querySelectorAll('#authTabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === t));
+  $('#pwForm').hidden = t !== 'password';
+  $('#loginForm').hidden = t !== 'link';
+  $('#codeForm').hidden = t !== 'link' || !$('#codeForm').dataset.sent;
+  msg('');
+}
+$('#authTabs').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) setTab(b.dataset.t); });
+
+const needEmail = () => {
+  const email = $('#email').value.trim();
+  if (!/^\S+@\S+\.\S+$/.test(email)) { msg('Enter your email address first.'); $('#email').focus(); return null; }
+  return email;
+};
+const busy = async (btn, fn) => { btn.disabled = true; try { await fn(); } finally { btn.disabled = false; } };
+
+$('#pwForm').addEventListener('submit', (e) => {
   e.preventDefault();
-  const { error } = await sb.auth.signInWithOtp({ email: $('#email').value, options: { emailRedirectTo: location.href.split('#')[0] } });
-  $('#loginMsg').textContent = error ? error.message : 'Check your inbox for the login link.';
+  const email = needEmail(); if (!email) return;
+  busy(e.submitter, async () => {
+    const { error } = await sb.auth.signInWithPassword({ email, password: $('#password').value });
+    if (error) msg(friendly(error)); else { state.user = null; start(); }
+  });
+});
+$('#forgot').addEventListener('click', (e) => {
+  e.preventDefault();
+  const email = needEmail(); if (!email) return;
+  busy($('#pwForm button'), async () => {
+    const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: location.origin });
+    msg(error ? friendly(error) : `If ${email} has an account, a password reset email is on its way. Check spam too.`);
+  });
+});
+$('#loginForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const email = needEmail(); if (!email) return;
+  busy(e.submitter, async () => {
+    const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin } });
+    msg(error ? friendly(error) : 'Check your inbox (and spam) and click the link in the email. If the email shows a code, you can type it below.');
+    $('#codeForm').dataset.sent = '1';
+    $('#codeForm').hidden = false;
+  });
+});
+$('#codeForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const email = needEmail(); if (!email) return;
+  busy(e.submitter, async () => {
+    const { error } = await sb.auth.verifyOtp({ email, token: $('#code').value.replace(/\D/g, ''), type: 'email' });
+    if (error) msg(`Code not accepted: ${friendly(error)}`); else { state.user = null; start(); }
+  });
+});
+$('#newPwForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const a = $('#newPw').value;
+  const b = $('#newPw2').value;
+  const bad = pwProblem(a); if (bad) return msg(bad);
+  if (a !== b) return msg("The two passwords don't match.");
+  busy(e.submitter, async () => {
+    const { error } = await sb.auth.updateUser({ password: a });
+    if (error) return msg(friendly(error));
+    passwordMode = null;
+    toast('Password saved');
+    state.user = null;
+    start();
+  });
 });
 $('#logout').addEventListener('click', async () => { await sb.auth.signOut(); location.hash = ''; location.reload(); });
-sb.auth.onAuthStateChange((ev) => { if (ev === 'SIGNED_IN' && !state.user) boot(); });
+let booting = null;
+const start = () => (booting ||= boot().finally(() => { booting = null; }));
+sb.auth.onAuthStateChange((ev) => {
+  if (ev === 'PASSWORD_RECOVERY') passwordMode = 'recovery';
+  if (ev === 'SIGNED_IN' && !state.user) start();
+});
 
 // ---------- filters + router ----------
 $('#range').addEventListener('click', (e) => {
@@ -110,13 +229,14 @@ async function route() {
   computeRange();
   const [, page = 'overview', arg] = location.hash.split('/');
   document.querySelectorAll('#navLinks a').forEach((a) => a.classList.toggle('on', a.dataset.k === page));
-  $('#filters').hidden = page === 'settings';
+  $('#filters').hidden = page === 'settings' || page === 'account';
   const view = $('#view');
   view.innerHTML = '<div class="empty">Loading…</div>';
   try {
     if (page === 'conversations' && isMgr()) await renderConversations(view, arg);
     else if (page === 'reports') await renderReports(view);
     else if (page === 'settings' && state.role === 'admin') await renderSettings(view);
+    else if (page === 'account') await renderAccount(view);
     else await renderOverview(view);
   } catch (err) {
     view.innerHTML = `<div class="card empty">Something went wrong: ${esc(err.message || err)}</div>`;
@@ -374,6 +494,32 @@ async function renderReports(view) {
 const listBlock = (title, arr) => (Array.isArray(arr) && arr.length
   ? `<div class="small" style="margin-top:8px;text-transform:uppercase;letter-spacing:.05em">${title}</div><ul>${arr.map((x) => `<li>${esc(typeof x === 'string' ? x : x.text || x.issue || JSON.stringify(x))}</li>`).join('')}</ul>` : '');
 
+// ---------- account (everyone) ----------
+async function renderAccount(view) {
+  view.innerHTML = `
+    <div class="section-title"><h2>Account</h2></div>
+    <div class="card" style="max-width:460px">
+      <h3>${esc(state.user.email)}</h3>
+      <p class="small">Role: ${esc(state.role)}. You can sign in with a password, or with an email link / code.</p>
+      <form id="acctPw">
+        <label for="aPw">New password (min 6, letters + numbers)</label><input id="aPw" type="password" autocomplete="new-password" minlength="6">
+        <label for="aPw2">Repeat new password</label><input id="aPw2" type="password" autocomplete="new-password" minlength="6">
+        <button class="btn" type="submit" style="margin-top:14px">Set / change password</button>
+      </form>
+      <p class="small" id="acctMsg"></p>
+    </div>`;
+  $('#acctPw').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const a = $('#aPw').value;
+    const b = $('#aPw2').value;
+    const bad = pwProblem(a); if (bad) { $('#acctMsg').textContent = bad; return; }
+    if (a !== b) { $('#acctMsg').textContent = "The two passwords don't match."; return; }
+    const { error } = await sb.auth.updateUser({ password: a });
+    $('#acctMsg').textContent = error ? friendly(error) : 'Password saved. A confirmation email is on its way.';
+    if (!error) e.target.reset();
+  });
+}
+
 // ---------- settings (admin) ----------
 async function renderSettings(view) {
   const [{ data: agents }, users] = await Promise.all([
@@ -470,4 +616,4 @@ async function renderSettings(view) {
   });
 }
 
-boot();
+start();
