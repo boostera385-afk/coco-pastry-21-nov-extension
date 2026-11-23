@@ -347,7 +347,7 @@ async function renderOverview(view) {
   const openIssues = isMgr() ? (await rpc('analysis_issues', { p_from: state.from, p_to: state.to, p_agent: agent })).filter((i) => i.status === 'open') : [];
   const period = state.from === state.to ? fmtDay(state.from) : `${fmtDay(state.from)} – ${fmtDay(state.to)}`;
   view.innerHTML = `
-    <div class="section-title"><h2>${isMgr() ? 'Activity' : 'My activity'} · ${esc(period)}</h2><button class="btn dark" id="csv">Download report (CSV)</button></div>
+    <div class="section-title"><h2>${isMgr() ? 'Activity' : 'My activity'} · ${esc(period)}</h2><div class="row" style="align-items:center"><button class="btn dark" id="csv" title="One row per agent: totals for the period">Summary (CSV)</button><button class="btn dark" id="csvDetail" title="One row per call, text and voicemail with time, contact, outcome and duration">Every call &amp; text (CSV)</button></div></div>
     <div class="kpis">
       ${kpi('Outbound', n(t.outbound_total), `every call + text · ${n(t.contacts_reached)} contact${t.contacts_reached === 1 ? '' : 's'}`, { hero: true, icon: ICON.out })}
       ${kpi('Calls out', n(t.outbound_calls), t.outbound_calls ? `${n(t.connected_calls)} picked up · ${n(t.conversations)} conversation${t.conversations === 1 ? '' : 's'}` : 'no calls yet', { icon: ICON.callOut })}
@@ -384,6 +384,12 @@ async function renderOverview(view) {
   $('#csv').addEventListener('click', () => downloadCsv(rows, `coco-report-${state.from}-to-${state.to}.csv`,
     ['agent_name', 'gv_number', 'outbound_total', 'contacts_reached', 'outbound_calls', 'connected_calls', 'conversations', 'outbound_texts',
       'inbound_total', 'inbound_calls', 'missed_calls', 'inbound_texts', 'voicemails', 'response_rate', 'avg_reply_min']));
+  $('#csvDetail').addEventListener('click', async () => {
+    const log = await rpc('activity_log', { p_from: state.from, p_to: state.to, p_agent: agent });
+    const rowsOut = log.map((r) => ({ ...r, conversation: r.channel === 'call' && r.direction === 'outbound' ? (r.conversation ? 'yes' : 'no') : '' }));
+    downloadCsv(rowsOut, `coco-activity-${state.from}-to-${state.to}.csv`,
+      ['local_time', 'agent_name', 'contact', 'contact_name', 'channel', 'direction', 'outcome', 'duration_sec', 'conversation', ...(isMgr() ? ['body'] : [])]);
+  });
 }
 const dayKeyIso = (iso) => dayKey(Date.parse(iso));
 
@@ -527,47 +533,86 @@ async function renderAnalysis(view) {
   });
 }
 
-// ---------- conversations (admin only) ----------
+// ---------- conversations (admin only): one row per contact, every call + text inside ----------
+const OUTCOME = { connected: 'picked up (person, voicemail or bot)', no_answer: 'no answer', answered: 'answered', missed: 'missed', voicemail: 'went to voicemail', rejected: 'declined', unknown: 'unknown' };
+const dur = (s) => (s >= 60 ? `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s` : `${s || 0}s`);
+const plural = (k, word) => `${n(k)} ${word}${Number(k) === 1 ? '' : 's'}`;
+
 async function renderConversations(view, selected) {
   view.innerHTML = `
     <div class="section-title"><h2>Conversations</h2><input id="search" placeholder="Search number, name or text" style="max-width:300px"></div>
-    <div class="convo"><div class="list" id="clist"></div><div class="card" id="detail"><div class="empty">Select a conversation</div></div></div>`;
+    <div class="convo"><div class="list" id="clist"></div><div class="card" id="detail"><div class="empty">Select a contact</div></div></div>`;
+  // older links point at one Voice thread id: map it to that thread's agent + contact
+  if (selected && /^[0-9a-f-]{36}$/.test(selected)) {
+    const { data } = await sb.from('conversations').select('agent_id, contact_id').eq('id', selected).maybeSingle();
+    if (data) selected = `${data.agent_id}~${data.contact_id || ''}`;
+  }
+  let list = [];
   const load = async () => {
-    const list = await rpc('conversation_list', { p_from: state.from, p_to: state.to, p_agent: state.agent || null, p_search: $('#search').value.trim() || null });
-    $('#clist').innerHTML = list.map((c) => `
-      <div class="item ${c.id === selected ? 'on' : ''}" data-id="${c.id}">
-        <b>${esc(c.contact_name || c.contact || 'Group / unknown')}</b>
-        <div class="small">${esc(c.agent_name)} · ${fmtTime(c.last_activity_at)} · ${c.messages} msg · ${c.calls} calls</div>
-        <div class="snip muted">${esc(c.last_text || '')}</div>
-      </div>`).join('') || '<div class="empty">No conversations in this period</div>';
-    $('#clist').querySelectorAll('.item').forEach((el) => el.addEventListener('click', () => { location.hash = `#/conversations/${el.dataset.id}`; }));
+    list = await rpc('contact_threads', { p_from: state.from, p_to: state.to, p_agent: state.agent || null, p_search: $('#search').value.trim() || null });
+    $('#clist').innerHTML = list.map((c) => {
+      const key = `${c.agent_id}~${c.contact_id || ''}`;
+      const calls = Number(c.calls_out) + Number(c.calls_in);
+      const texts = Number(c.texts_out) + Number(c.texts_in);
+      const parts = [];
+      if (calls) parts.push(`${plural(calls, 'call')}${Number(c.calls_out) ? ` (${n(c.picked_up)} picked up · ${n(c.conversations)} conv.)` : ''}`);
+      if (texts) parts.push(`${plural(texts, 'text')} (${n(c.texts_out)} out · ${n(c.texts_in)} in)`);
+      if (Number(c.voicemails)) parts.push(plural(c.voicemails, 'voicemail'));
+      return `
+      <div class="item ${key === selected ? 'on' : ''}" data-key="${key}">
+        <div class="item-top"><b>${esc(c.contact_name || c.contact || 'Group / unknown')}</b><span class="small muted">${fmtTime(c.last_activity_at)}</span></div>
+        <div class="small">${parts.join(' · ') || 'no activity'}</div>
+        <div class="snip muted">${esc(c.agent_name)}${c.last_text ? ` · ${esc(c.last_text)}` : ''}</div>
+      </div>`;
+    }).join('') || '<div class="empty">No conversations in this period</div>';
+    $('#clist').querySelectorAll('.item').forEach((el) => el.addEventListener('click', () => { location.hash = `#/conversations/${el.dataset.key}`; }));
   };
   let timer;
   $('#search').addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(load, 300); });
   await load();
-  if (selected) await renderDetail(selected);
+  if (selected) await renderDetail(selected, list.find((c) => `${c.agent_id}~${c.contact_id || ''}` === selected));
 }
 
-async function renderDetail(id) {
-  const [{ data: msgs }, { data: calls }] = await Promise.all([
-    sb.from('messages').select('id, direction, kind, body, occurred_at').eq('conversation_id', id).order('occurred_at'),
-    sb.from('calls').select('id, direction, outcome, duration_sec, occurred_at').eq('conversation_id', id).order('occurred_at'),
-  ]);
-  const items = [
-    ...(msgs || []).map((m) => ({ ...m, t: 'm' })),
-    ...(calls || []).map((c) => ({ ...c, t: 'c' })),
-  ].sort((x, y) => Date.parse(x.occurred_at) - Date.parse(y.occurred_at));
-  const OUTCOME = { connected: 'picked up (person, voicemail or bot)', no_answer: 'no answer', answered: 'answered', missed: 'missed', voicemail: 'went to voicemail', rejected: 'declined', unknown: 'unknown' };
-  const callLabel = (c) => `${c.direction === 'outbound' ? '↗ Outgoing' : '↙ Incoming'} call · ${OUTCOME[c.outcome] || c.outcome}${c.duration_sec ? ` · ${Math.floor(c.duration_sec / 60)} min ${c.duration_sec % 60}s` : ''}`;
-  const outN = items.filter((i) => i.direction === 'outbound').length;
+async function renderDetail(key, head) {
+  const [agentId, contactId] = key.split('~');
+  const items = await rpc('contact_timeline', { p_agent: agentId, p_contact: contactId || null });
+  // private audio (voicemails / recorded calls): short-lived signed links, admins only (storage policy)
+  const paths = items.map((i) => i.recording_path).filter(Boolean);
+  const signed = paths.length ? ((await sb.storage.from('recordings').createSignedUrls(paths, 3600)).data || []) : [];
+  const audioUrl = Object.fromEntries(signed.filter((x) => x.signedUrl).map((x) => [x.path, x.signedUrl]));
+  const player = (it) => (audioUrl[it.recording_path] ? `<audio class="rec" controls preload="none" src="${esc(audioUrl[it.recording_path])}"></audio>` : '');
+  const calls = items.filter((i) => i.kind === 'call');
+  const out = calls.filter((c) => c.direction === 'outbound');
+  const stat = (label, v) => `<div class="stat"><div class="value">${v}</div><div class="small muted">${label}</div></div>`;
+  let lastDay = '';
+  const rows = items.map((it) => {
+    const day = fmtDay(dayKeyIso(it.occurred_at));
+    const sep = day !== lastDay ? `<div class="daysep">${esc(day)}</div>` : '';
+    lastDay = day;
+    const time = new Date(it.occurred_at).toLocaleTimeString('en-US', { timeZone: tz(), hour: 'numeric', minute: '2-digit' });
+    if (it.kind === 'call') {
+      const o = it.direction === 'outbound';
+      const cls = it.outcome === 'no_answer' || it.outcome === 'missed' ? 'bad' : it.conversation ? 'good' : '';
+      return `${sep}<div class="callrow ${cls}"><span class="ci">${o ? ICON.callOut : ICON.callIn}</span>
+        <div><b>${o ? 'Outgoing' : 'Incoming'} call</b> · ${esc(OUTCOME[it.outcome] || it.outcome || 'unknown')}${it.conversation ? ' · <span class="badge good">conversation</span>' : ''}
+        <div class="small muted">${time} · ${it.duration_sec ? dur(it.duration_sec) : '0s'}</div>
+        ${it.body ? `<div class="small">${esc(it.body)}</div>` : ''}${player(it)}</div></div>`;
+    }
+    return `${sep}<div class="bubble ${it.direction === 'outbound' ? 'out' : ''}">
+      ${it.kind === 'voicemail' ? '<b>Voicemail</b> ' : ''}${esc(it.body || (it.kind === 'voicemail' ? '(no transcript)' : '(no text)'))}
+      ${player(it)}<div class="meta">${it.direction === 'outbound' ? 'Sent' : 'Received'} · ${time}${it.kind === 'voicemail' && !it.recording_path ? ' · audio not saved yet' : ''}</div></div>`;
+  }).join('');
+  const texts = (dir) => n(items.filter((i) => i.kind === 'text' && i.direction === dir).length);
   $('#detail').innerHTML = `
-    <div class="section-title"><h3>Timeline</h3><span class="small">${items.length} items · ${outN} outbound · ${items.length - outN} inbound</span></div>
-    <div class="timeline">${items.map((it) => it.t === 'c'
-      ? `<div class="event">${esc(callLabel(it))} · ${fmtTime(it.occurred_at)}</div>`
-      : `<div class="bubble ${it.direction === 'outbound' ? 'out' : ''}">
-           ${it.kind === 'voicemail' ? '<b>Voicemail:</b> ' : ''}${esc(it.body || '(no text)')}
-           <div class="meta">${fmtTime(it.occurred_at)}</div></div>`).join('') || '<div class="empty">Empty</div>'}
-    </div>`;
+    <div class="section-title"><h3>${esc(head?.contact_name || head?.contact || 'Contact')}</h3><span class="small muted">${esc(head?.agent_name || '')} · full history</span></div>
+    <div class="stats">
+      ${stat('calls out', n(out.length))}${stat('picked up', n(out.filter((c) => c.duration_sec > 0).length))}
+      ${stat('conversations', n(out.filter((c) => c.conversation).length))}${stat('no answer', n(out.filter((c) => !c.duration_sec).length))}
+      ${stat('talk time', dur(calls.reduce((s, c) => s + (c.duration_sec || 0), 0)))}
+      ${stat('texts out / in', `${texts('outbound')} / ${texts('inbound')}`)}
+      ${stat('calls in', n(calls.length - out.length))}${stat('voicemails', n(items.filter((i) => i.kind === 'voicemail').length))}
+    </div>
+    <div class="timeline">${rows || '<div class="empty">Empty</div>'}</div>`;
 }
 
 // ---------- account (everyone) ----------

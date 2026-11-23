@@ -98,6 +98,18 @@ test('parser: real Google Voice outgoing call (verified 2026-11-23, numbers reda
   }
 });
 
+test('parser: real Google Voice voicemail (verified 2026-11-23, numbers redacted)', () => {
+  const A = '+15550001111'; const C = '+15550002222';
+  const url = 'https://www.google.com/voice/media/svm/123/AbC-xyz';
+  const vm = ['PCIFEETKGIZBFOU2ELBGBUBQIAUIAKIAC', 1795430477644, A, [C, C, null, null, null, null, 0], 2, 0, null, null, 3, '', null, url, 3, 8, null, C, 0, null, [null, 2], null, null, [[], null, 1], null, null, null, null, null, null, null, 'c.PCIFEETKGIZBFOU2ELBGBUBQIAUIAKIAC'];
+  const body = JSON.stringify([[['c.PCIFEETKGIZBFOU2ELBGBUBQIAUIAKIAC', 0, [vm]]]]);
+  const [e] = parseResponse('https://clients6.google.com/voice/v1/voiceclient/api2thread/list', body, { agentNumber: A }).events;
+  assert.deepEqual([e.type, e.direction, e.contact_number, e.duration_sec, e.media_url, e.body], ['voicemail', 'inbound', C, 3, url, null]);
+  const said = structuredClone(vm); said[21] = [[['Hi', 'call', 'me'], ['back']], null, 1];
+  const [e2] = parseResponse('https://x/voiceclient/api2thread/list', JSON.stringify([[['c.X', 0, [said]]]]), { agentNumber: A }).events;
+  assert.equal(e2.body, 'Hi call me back');
+});
+
 test('parser: ignores unrelated urls and bad json', () => {
   assert.deepEqual(parseResponse('https://x/other', '[]').events, []);
   assert.deepEqual(parseResponse('https://x/api2thread/list', 'not json').events, []);

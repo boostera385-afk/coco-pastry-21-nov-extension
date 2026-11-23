@@ -1,6 +1,6 @@
 // Google Voice-format payloads for the virtual test.
 // SMS layout is VERIFIED from a live account (2026-11-23): id@0, ts@1, phone@2, [phones]@3, type@4, read@5, text@9, threadId@last.
-// Codes, duration@8 and transcript@12 follow FIELD_MAP (10/11/14 verified from live data; others a best guess).
+// Codes, duration@8, audio@11 and transcript@21 follow FIELD_MAP (2/10/11/14 verified from live data; others a best guess).
 
 export const AGENT = '+13075550100';
 export const A = '+15550100001'; // texts + outbound call
@@ -18,7 +18,7 @@ const id = (tag) => `e2e${tag}${(++seq).toString(16).padStart(6, '0')}${'0'.repe
 export function msg({ tag, at, phone, type, text = null, duration = null, transcript = null, thread }) {
   const m = new Array(32).fill(null);
   m[0] = id(tag); m[1] = at; m[2] = phone; m[3] = [phone, AGENT, null, null, null, null, 0];
-  m[4] = type; m[5] = 1; m[9] = text; m[8] = duration; m[12] = transcript;
+  m[4] = type; m[5] = 1; m[9] = text; m[8] = duration; m[21] = transcript ? [[transcript.split(' ')], null, 1] : null;
   m[31] = thread;
   return m;
 }

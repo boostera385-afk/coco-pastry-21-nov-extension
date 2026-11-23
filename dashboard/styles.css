@@ -111,3 +111,14 @@ tr.click { cursor: pointer; } tr.click:hover td { background: var(--surface-2); 
 .token-row { display: flex; gap: 8px; align-items: center; margin: 10px 0; }
 .token-row .token { flex: 1; }
 table.wrap td { white-space: normal; overflow-wrap: anywhere; }
+.item-top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; margin: 10px 0 14px; }
+.stat { background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.stat .value { font: 600 20px/1.1 var(--head); color: var(--text); }
+.daysep { justify-self: center; font: 500 11px var(--body); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 8px 0 2px; }
+.callrow { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border: 1px solid var(--line); border-left: 3px solid var(--yellow); border-radius: 8px; background: var(--surface); max-width: 90%; }
+.callrow.good { border-left-color: var(--green); } .callrow.bad { border-left-color: var(--red); }
+.callrow .ci { flex: none; width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; background: var(--surface-2); color: var(--yellow); }
+.callrow .ci svg { width: 16px; height: 16px; }
+.badge.good { background: var(--green); border-color: var(--green); color: #fff; }
+audio.rec { width: 100%; max-width: 320px; height: 32px; margin-top: 6px; }

@@ -247,6 +247,15 @@ async function onCapture({ url, body, reqBody }) {
   for (const [id, v] of Object.entries(local)) if (v.at < cutoff) delete local[id];
 
   await set({ events: local, queue, health });
+  // audio (voicemail / call recording) is copied to the dashboard after the event itself is synced
+  const withMedia = events.filter((e) => e.media_url && Date.parse(e.occurred_at) >= since);
+  if (withMedia.length) {
+    await serial(async () => {
+      const { media = [], mediaDone = {} } = await get(['media', 'mediaDone']);
+      for (const e of withMedia) if (!mediaDone[e.gv_id] && !media.some((x) => x.id === e.gv_id)) media.push({ id: e.gv_id, url: e.media_url, tries: 0 });
+      await set({ media });
+    });
+  }
   if (added) await refreshStatus();
   // New calls/texts reach the dashboard within seconds (debounced; the 1-minute alarm is the fallback).
   if (queue.length >= 50) sync();
@@ -302,7 +311,7 @@ chrome.alarms.onAlarm.addListener(async (a) => {
 /** Health + diagnostics sent with every sync (no message content, only counts and endpoint paths). */
 async function healthReport(health = {}) {
   await flushNet();
-  const x = await get(['status', 'net', 'capturesSinceLoad', 'apiSinceLoad', 'pageLoadAt', 'needsVoiceReload', 'paused', 'pausedAt', 'idb', 'debugRecord', 'samples']);
+  const x = await get(['status', 'net', 'capturesSinceLoad', 'apiSinceLoad', 'pageLoadAt', 'needsVoiceReload', 'paused', 'pausedAt', 'idb', 'debugRecord', 'samples', 'media', 'mediaStats']);
   return {
     ...health, sendChecks: undefined,
     paused: !!x.paused, status: x.status?.text || null,
@@ -310,7 +319,53 @@ async function healthReport(health = {}) {
     pageLoadAt: x.pageLoadAt || null, capturesSinceLoad: x.capturesSinceLoad || 0, apiSinceLoad: x.apiSinceLoad || 0,
     needsVoiceReload: !!x.needsVoiceReload, net: x.net || {}, idb: x.idb || [],
     recording: !!x.debugRecord, samples: (x.samples || []).length,
+    audio: { ...(x.mediaStats || { uploaded: 0, failed: 0 }), pending: (x.media || []).length },
   };
+}
+
+/**
+ * Copy voicemail / call-recording audio into the dashboard's private storage. Google's media links only
+ * work with the agent's own Google sign-in, so the extension downloads the file and uploads it.
+ */
+let uploading = false;
+async function uploadMedia() {
+  if (uploading) return;
+  uploading = true;
+  try {
+    const { media = [], agentToken, paused } = await get(['media', 'agentToken', 'paused']);
+    if (!agentToken || paused || !media.length) return;
+    const done = {}; const failed = [];
+    for (const m of media.slice(0, 5)) {
+      try {
+        const r = await fetch(m.url, { credentials: 'include', signal: AbortSignal.timeout(60000) });
+        if (!r.ok) throw new Error(`download ${r.status}`);
+        const blob = await r.blob();
+        const type = /^audio\//.test(blob.type) ? blob.type : 'audio/mpeg';
+        const u = await fetch(`${INGEST_URL}?media=${encodeURIComponent(m.id)}`, {
+          method: 'POST', headers: { 'x-agent-token': agentToken, 'Content-Type': type }, body: blob, signal: AbortSignal.timeout(120000),
+        });
+        const out = await u.json().catch(() => ({}));
+        if (!u.ok) throw new Error(out.error || `upload ${u.status}`);
+        if (!out.attached) throw new Error('event not synced yet');
+        done[m.id] = Date.now();
+      } catch (e) {
+        if (m.tries < 6) failed.push({ ...m, tries: m.tries + 1, error: String(e.message || e).slice(0, 80) });
+      }
+    }
+    const handled = new Set(media.slice(0, 5).map((m) => m.id));
+    await serial(async () => {
+      const cur = await get(['media', 'mediaDone', 'mediaStats']);
+      const stats = cur.mediaStats || { uploaded: 0, failed: 0 };
+      stats.uploaded += Object.keys(done).length;
+      stats.failed += media.slice(0, 5).length - Object.keys(done).length;
+      if (failed.length) stats.lastError = failed[failed.length - 1].error;
+      const mediaDone = { ...(cur.mediaDone || {}), ...done };
+      for (const [k, t] of Object.entries(mediaDone)) if (t < Date.now() - KEEP_DAYS * 864e5) delete mediaDone[k];
+      await set({ media: [...(cur.media || []).filter((x) => !handled.has(x.id)), ...failed], mediaDone, mediaStats: stats });
+    });
+  } finally {
+    uploading = false;
+  }
 }
 
 let syncing = false;
@@ -321,7 +376,7 @@ async function sync() {
     const st = await get(['agentToken', 'queue', 'agentNumber', 'heartbeatPending', 'health', 'backoffUntil', 'trackingStart']);
     if (!st.agentToken) return { ok: false, error: 'Not connected' };
     if (st.backoffUntil && Date.now() < st.backoffUntil) return { ok: false, error: 'Waiting to retry' };
-    if (!(st.queue || []).length && !st.heartbeatPending) return { ok: true, sent: 0 };
+    if (!(st.queue || []).length && !st.heartbeatPending) { uploadMedia(); return { ok: true, sent: 0 }; }
 
     let sent = 0;
     let batch;
@@ -359,6 +414,7 @@ async function sync() {
 
     await set({ lastSyncAt: Date.now(), lastSyncError: null, failures: 0, backoffUntil: 0 });
     await refreshStatus(); // status/badge reflect the empty queue right away
+    uploadMedia();
     return { ok: true, sent };
   } catch (e) {
     const { failures = 0 } = await get('failures');

@@ -74,6 +74,13 @@ try {
       }
     }
   }
+  if (process.env.SHOTS) { // contact detail view
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1300, height: 1100, deviceScaleFactor: 1, mobile: false }, s);
+    await cdp.eval(s, "location.hash = '#/conversations'; true"); await sleep(2500);
+    await cdp.eval(s, "(document.querySelector('#clist .item') || {}).click?.(); true"); await sleep(3000);
+    const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' }, s);
+    fs.writeFileSync(path.join(process.env.SHOTS, 'conversation.png'), Buffer.from(data, 'base64'));
+  }
   cdp.close();
 } catch (e) { fails++; console.log('FAIL  run:', e.message); } finally {
   if (userId) await fetch(`${URL_}/auth/v1/admin/users/${userId}`, { method: 'DELETE', headers: { apikey: SR, Authorization: `Bearer ${SR}` } }).catch(() => {});

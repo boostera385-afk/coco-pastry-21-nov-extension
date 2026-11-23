@@ -34,6 +34,24 @@ Deno.serve(async (req) => {
   if (agentErr) return json({ error: 'lookup failed' }, 500);
   if (!agent || !agent.active) return json({ error: 'invalid or inactive token' }, 401);
 
+  // ---- audio upload: POST ?media=<gv_id>  (voicemail / call recording copied by the extension) ----
+  const media = new URL(req.url).searchParams.get('media');
+  if (media !== null) {
+    if (!/^[A-Za-z0-9_.-]{6,80}$/.test(media)) return json({ error: 'bad media id' }, 400);
+    const type = (req.headers.get('content-type') ?? 'application/octet-stream').split(';')[0].trim().toLowerCase();
+    if (!/^audio\/|^application\/octet-stream$/.test(type)) return json({ error: 'audio only' }, 415);
+    const bytes = new Uint8Array(await req.arrayBuffer());
+    if (!bytes.length || bytes.length > 25 * 1024 * 1024) return json({ error: 'empty or too large (25 MB max)' }, 413);
+    const ext = type.includes('mpeg') || type.includes('mp3') ? 'mp3' : type.includes('mp4') || type.includes('aac') ? 'm4a'
+      : type.includes('ogg') ? 'ogg' : type.includes('wav') ? 'wav' : type.includes('webm') ? 'webm' : type.includes('amr') ? 'amr' : 'bin';
+    const path = `${agent.id}/${media}.${ext}`;
+    const up = await supabase.storage.from('recordings').upload(path, bytes, { contentType: type, upsert: true });
+    if (up.error) return json({ error: `storage: ${up.error.message}` }, 500);
+    const { data: rows, error: attErr } = await supabase.rpc('attach_recording', { p_agent: agent.id, p_gv_id: media, p_path: path });
+    if (attErr) return json({ error: attErr.message }, 500);
+    return json({ ok: true, path, attached: rows });
+  }
+
   let body: {
     events?: unknown[]; agent_number?: string; parser_version?: string;
     tracking_start?: string; heartbeat?: { health?: unknown };
