@@ -2,6 +2,8 @@
 // Rule (department, 2026-11-23): every call and every text counts; contacts = distinct numbers in the range.
 
 export const DEFAULT_TZ = 'Asia/Karachi';
+/** Outgoing call of at least this many seconds = a real conversation (dashboard setting, default 60). */
+export const CONVERSATION_SEC = 60;
 
 /** YYYY-MM-DD of a timestamp in the given IANA timezone. */
 export function dayKey(ms, tz = DEFAULT_TZ) {
@@ -51,14 +53,19 @@ export function addDays(key, n) {
 export function summarize(events, fromKey, toKey, tz = DEFAULT_TZ) {
   const r = {
     outboundTotal: 0, inboundTotal: 0, contactsReached: 0,
-    outboundCalls: 0, connectedCalls: 0, outboundTexts: 0,
+    outboundCalls: 0, connectedCalls: 0, conversations: 0, outboundTexts: 0,
     inboundCalls: 0, missedCalls: 0, inboundTexts: 0, voicemails: 0,
   };
   const reached = new Set();
   for (const e of events) {
     const day = dayKey(e.at, tz);
     if (day < fromKey || day > toKey) continue;
-    if (e.k === 'call' && e.d === 'out') { r.outboundCalls++; if (e.o === 'answered' || e.s > 0) r.connectedCalls++; }
+    if (e.k === 'call' && e.d === 'out') {
+      r.outboundCalls++;
+      // Voice can't tell a person from voicemail/bots on outgoing calls: >0 s = picked up, >= 60 s = conversation
+      if (e.s > 0) r.connectedCalls++;
+      if (e.s >= CONVERSATION_SEC) r.conversations++;
+    }
     if (e.k === 'text' && e.d === 'out') r.outboundTexts++;
     if (e.k === 'call' && e.d === 'in') { r.inboundCalls++; if (e.o === 'missed' || e.o === 'voicemail') r.missedCalls++; }
     if (e.k === 'text' && e.d === 'in') r.inboundTexts++;

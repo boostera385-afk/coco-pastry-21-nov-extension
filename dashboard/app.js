@@ -254,7 +254,7 @@ async function route() {
 // Department rule: every call and every text counts (no "once per day" de-duplication).
 function totals(rows) {
   const t = {};
-  const keys = ['outbound_total', 'inbound_total', 'contacts_reached', 'outbound_calls', 'connected_calls', 'outbound_texts',
+  const keys = ['outbound_total', 'inbound_total', 'contacts_reached', 'outbound_calls', 'connected_calls', 'conversations', 'outbound_texts',
     'inbound_calls', 'missed_calls', 'inbound_texts', 'voicemails', 'unclassified'];
   keys.forEach((k) => { t[k] = rows.reduce((s, r) => s + Number(r[k] || 0), 0); });
   const w = rows.filter((r) => r.response_rate != null);
@@ -270,7 +270,9 @@ function insights(t, rows, daily) {
   if (t.missed_calls) out.push(['bad', `${n(t.missed_calls)} inbound call${t.missed_calls > 1 ? 's were' : ' was'} missed. Best practice: call back within 1 hour.`]);
   if (t.outbound_calls) {
     const c = t.connected_calls / t.outbound_calls;
-    out.push([c < 0.2 ? 'bad' : 'good', `${pct(t.connected_calls, t.outbound_calls)} of outbound calls connected${c < 0.2 ? ' — try a text before calling, or call at a different time of day.' : '.'}`]);
+    const v = t.conversations / t.outbound_calls;
+    out.push([c < 0.2 ? 'bad' : '', `${pct(t.connected_calls, t.outbound_calls)} of outbound calls were picked up (by a person, voicemail or a bot)${c < 0.2 ? ' — try a text before calling, or call at a different time of day.' : '.'}`]);
+    out.push([v < 0.1 ? 'bad' : 'good', `${n(t.conversations)} real conversation${t.conversations === 1 ? '' : 's'} (${pct(t.conversations, t.outbound_calls)} of calls lasted ${state.settings?.analysis_rules?.conversation_sec || 60}s+)${v < 0.1 ? ' — most pickups were voicemail/bots or quick hang-ups; leave a voicemail and follow up by text.' : '.'}`]);
   }
   if (t.avg_reply_min != null) out.push([t.avg_reply_min > 60 ? 'bad' : 'good', `Average reply time to customers: ${mins(t.avg_reply_min)}${t.avg_reply_min > 60 ? ' — target is under 15 min during business hours.' : '.'}`]);
   if (t.response_rate != null) out.push(['', `${t.response_rate.toFixed(0)}% of contacts reached replied within 7 days.`]);
@@ -348,7 +350,7 @@ async function renderOverview(view) {
     <div class="section-title"><h2>${isMgr() ? 'Activity' : 'My activity'} · ${esc(period)}</h2><button class="btn dark" id="csv">Download report (CSV)</button></div>
     <div class="kpis">
       ${kpi('Outbound', n(t.outbound_total), `every call + text · ${n(t.contacts_reached)} contact${t.contacts_reached === 1 ? '' : 's'}`, { hero: true, icon: ICON.out })}
-      ${kpi('Calls out', n(t.outbound_calls), t.outbound_calls ? `${pct(t.connected_calls, t.outbound_calls)} connected` : 'no calls yet', { icon: ICON.callOut })}
+      ${kpi('Calls out', n(t.outbound_calls), t.outbound_calls ? `${n(t.connected_calls)} picked up · ${n(t.conversations)} conversation${t.conversations === 1 ? '' : 's'}` : 'no calls yet', { icon: ICON.callOut })}
       ${kpi('Texts out', n(t.outbound_texts), 'sent', { icon: ICON.textOut })}
       ${kpi('Inbound', n(t.inbound_total), 'every call + text + voicemail', { tone: 'g', icon: ICON.in })}
       ${kpi('Calls in', n(t.inbound_calls), `${n(t.missed_calls)} missed`, { tone: t.missed_calls ? 'r' : 'g', icon: ICON.callIn })}
@@ -362,12 +364,12 @@ async function renderOverview(view) {
     <div class="card">
       <h3>${isMgr() ? 'Agents' : 'My extension'}</h3>
       <div class="table-wrap"><table>
-        <thead><tr><th>Agent</th><th class="num">Outbound</th><th class="num">Contacts</th><th class="num">Calls out</th><th class="num">Connected</th><th class="num">Texts out</th><th class="num">Inbound</th><th class="num">Calls in</th><th class="num">Missed</th><th class="num">Texts in</th><th class="num">Reply rate</th><th class="num">Avg reply</th><th>Extension</th></tr></thead>
+        <thead><tr><th>Agent</th><th class="num">Outbound</th><th class="num">Contacts</th><th class="num">Calls out</th><th class="num" title="Picked up by a person, voicemail or a bot (call lasted more than 0 s)">Picked up</th><th class="num" title="Picked-up calls that lasted at least the conversation threshold">Conversations</th><th class="num">Texts out</th><th class="num">Inbound</th><th class="num">Calls in</th><th class="num">Missed</th><th class="num">Texts in</th><th class="num">Reply rate</th><th class="num">Avg reply</th><th>Extension</th></tr></thead>
         <tbody>${rows.map((r) => `
           <tr class="${isMgr() ? 'click' : ''}" data-agent="${r.agent_id}">
             <td>${esc(r.agent_name)}<div class="small muted">${esc(r.gv_number || '')}</div></td>
             <td class="num"><b>${n(r.outbound_total)}</b></td><td class="num">${n(r.contacts_reached)}</td>
-            <td class="num">${n(r.outbound_calls)}</td><td class="num">${pct(r.connected_calls, r.outbound_calls)}</td><td class="num">${n(r.outbound_texts)}</td>
+            <td class="num">${n(r.outbound_calls)}</td><td class="num">${pct(r.connected_calls, r.outbound_calls)}</td><td class="num">${n(r.conversations)}</td><td class="num">${n(r.outbound_texts)}</td>
             <td class="num"><b>${n(r.inbound_total)}</b></td><td class="num">${n(r.inbound_calls)}</td><td class="num">${n(r.missed_calls)}</td><td class="num">${n(r.inbound_texts)}</td>
             <td class="num">${r.response_rate == null ? '—' : `${r.response_rate}%`}</td><td class="num">${mins(r.avg_reply_min)}</td>
             <td>${connBadge({ last_heartbeat_at: r.last_heartbeat_at, last_health: health[r.agent_id] })}<div class="small muted">since ${r.tracking_start ? fmtTime(r.tracking_start) : '—'}</div></td>
@@ -380,7 +382,7 @@ async function renderOverview(view) {
     route();
   }));
   $('#csv').addEventListener('click', () => downloadCsv(rows, `coco-report-${state.from}-to-${state.to}.csv`,
-    ['agent_name', 'gv_number', 'outbound_total', 'contacts_reached', 'outbound_calls', 'connected_calls', 'outbound_texts',
+    ['agent_name', 'gv_number', 'outbound_total', 'contacts_reached', 'outbound_calls', 'connected_calls', 'conversations', 'outbound_texts',
       'inbound_total', 'inbound_calls', 'missed_calls', 'inbound_texts', 'voicemails', 'response_rate', 'avg_reply_min']));
 }
 const dayKeyIso = (iso) => dayKey(Date.parse(iso));
@@ -401,7 +403,7 @@ async function renderContacts(view) {
   const load = async () => {
     rows = await rpc('contact_activity', { p_from: state.from, p_to: state.to, p_agent: state.agent || null, p_search: $('#csearch').value.trim() || null });
     $('#ctable').innerHTML = `<table>
-      <thead><tr><th>Contact</th><th>Agent</th><th class="num">Calls out</th><th class="num">Connected</th><th class="num">Texts out</th><th class="num">Calls in</th><th class="num">Missed</th><th class="num">Texts in</th><th class="num">Voicemails</th><th class="num">Total</th><th>Last activity</th></tr></thead>
+      <thead><tr><th>Contact</th><th>Agent</th><th class="num">Calls out</th><th class="num" title="Picked up by a person, voicemail or a bot">Picked up</th><th class="num">Texts out</th><th class="num">Calls in</th><th class="num">Missed</th><th class="num">Texts in</th><th class="num">Voicemails</th><th class="num">Total</th><th>Last activity</th></tr></thead>
       <tbody>${rows.map((c) => `<tr class="click" data-conv="${c.conversation_id || ''}">
         <td><b>${esc(c.contact_name || c.contact)}</b>${c.contact_name ? `<div class="small muted">${esc(c.contact)}</div>` : ''}</td>
         <td>${esc(c.agent_name)}</td>
@@ -428,7 +430,7 @@ const RULES = {
   over_contacting: { label: 'Over-contacting', why: 'Too many attempts in one day without any reply feels like spam — space them out.' },
   no_follow_up: { label: 'No follow-up', why: 'A single unanswered attempt is rarely enough — follow up after the set hours.' },
   quiet_hours: { label: 'Quiet hours', why: 'Don\'t call or text customers late at night or early morning in their timezone.' },
-  very_short_call: { label: 'Very short call', why: 'Connected calls that end in a few seconds usually mean a hang-up — check the opener.' },
+  very_short_call: { label: 'Very short call', why: 'Picked-up calls that end in a few seconds usually mean a hang-up or a bot — check the opener.' },
 };
 const SEV_ORDER = { high: 0, medium: 1, low: 2 };
 let anFilter = { status: 'open', severity: '', rule: '' };
@@ -555,7 +557,8 @@ async function renderDetail(id) {
     ...(msgs || []).map((m) => ({ ...m, t: 'm' })),
     ...(calls || []).map((c) => ({ ...c, t: 'c' })),
   ].sort((x, y) => Date.parse(x.occurred_at) - Date.parse(y.occurred_at));
-  const callLabel = (c) => `${c.direction === 'outbound' ? '↗ Outgoing' : '↙ Incoming'} call · ${c.outcome}${c.duration_sec ? ` · ${Math.floor(c.duration_sec / 60)} min ${c.duration_sec % 60}s` : ''}`;
+  const OUTCOME = { connected: 'picked up (person, voicemail or bot)', no_answer: 'no answer', answered: 'answered', missed: 'missed', voicemail: 'went to voicemail', rejected: 'declined', unknown: 'unknown' };
+  const callLabel = (c) => `${c.direction === 'outbound' ? '↗ Outgoing' : '↙ Incoming'} call · ${OUTCOME[c.outcome] || c.outcome}${c.duration_sec ? ` · ${Math.floor(c.duration_sec / 60)} min ${c.duration_sec % 60}s` : ''}`;
   const outN = items.filter((i) => i.direction === 'outbound').length;
   $('#detail').innerHTML = `
     <div class="section-title"><h3>Timeline</h3><span class="small">${items.length} items · ${outN} outbound · ${items.length - outN} inbound</span></div>
@@ -717,6 +720,7 @@ async function renderSettings(view) {
         <div><label>Quiet hours end</label><input id="rQe" type="time" value="${s.analysis_rules?.quiet_end ?? '08:00'}"></div>
         <div><label>Customer timezone (quiet hours)</label><select id="rQtz">${Object.entries(TZ_NAMES).map(([k, v]) => opt(k, s.analysis_rules?.quiet_tz ?? 'America/New_York', `${v} (${k})`)).join('')}</select></div>
         <div><label>Very short call under (sec)</label><input id="rShort" type="number" min="1" value="${s.analysis_rules?.short_call_sec ?? 15}"></div>
+        <div><label>Conversation = call of at least (sec)</label><input id="rConv" type="number" min="10" value="${s.analysis_rules?.conversation_sec ?? 60}"></div>
       </div>
       <div class="row"><div><button class="btn" id="saveSettings">Save</button></div></div>
     </div>`;
@@ -789,7 +793,7 @@ async function renderSettings(view) {
       analysis_rules: {
         reply_target_min: num('#rReply'), callback_target_min: num('#rCb'), followup_after_hours: num('#rFu'),
         max_unanswered_per_day: num('#rMax'), quiet_start: $('#rQs').value || '21:00', quiet_end: $('#rQe').value || '08:00',
-        quiet_tz: $('#rQtz').value, short_call_sec: num('#rShort'),
+        quiet_tz: $('#rQtz').value, short_call_sec: num('#rShort'), conversation_sec: num('#rConv'),
       },
     };
     const { data, error } = await sb.from('app_settings').update(upd).eq('id', 1).select().single();

@@ -196,14 +196,14 @@ async function main() {
   const db1 = (await sql(`select (select count(*) from messages where agent_id='${agentId}') m, (select count(*) from calls where agent_id='${agentId}') c,
     (select count(*) from unclassified_events where agent_id='${agentId}') u, (select count(*) from raw_events where agent_id='${agentId}') r,
     (select count(*) from messages where agent_id='${agentId}' and kind='voicemail' and body like 'Hi, please call%') vm,
-    (select count(*) from calls where agent_id='${agentId}' and direction='outbound' and outcome='answered' and duration_sec=125) cout,
+    (select count(*) from calls where agent_id='${agentId}' and direction='outbound' and outcome='connected' and duration_sec=125) cout,
     (select count(*) from calls where agent_id='${agentId}' and direction='inbound' and outcome='missed') cmiss,
     (select gv_number from agents where id='${agentId}') num`))[0];
   check(`DB: ${sc.expect.dbMessages} messages (texts + voicemail)`, Number(db1.m) === sc.expect.dbMessages, `got ${db1.m}`);
   check(`DB: ${sc.expect.dbCalls} calls`, Number(db1.c) === sc.expect.dbCalls, `got ${db1.c}`);
   check('DB: unknown item stored in unclassified_events', Number(db1.u) === sc.expect.unclassified, `got ${db1.u}`);
   check('DB: voicemail transcript stored', Number(db1.vm) === 1);
-  check('DB: outbound call answered with duration 125 s', Number(db1.cout) === 1);
+  check('DB: outbound call picked up (connected) with duration 125 s', Number(db1.cout) === 1);
   check('DB: inbound missed call', Number(db1.cmiss) === 1);
   check('DB: agent Voice number saved', db1.num === F.AGENT, db1.num);
   const [{ h }] = await sql(`select last_health h from agents where id='${agentId}'`);
