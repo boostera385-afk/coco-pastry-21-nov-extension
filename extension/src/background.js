@@ -6,7 +6,7 @@ import { INGEST_URL, TOKEN_RE } from './config.js';
 
 const KEEP_DAYS = 35;          // local history for the panel
 const BATCH = 100;
-const MAX_SAMPLES = 40;        // sample recorder (Settings → Record samples)
+const MAX_SAMPLES = 60;        // sample recorder (Settings → Record samples)
 const TAB_STALE_MS = 11 * 60e3; // no heartbeat for this long = no Voice tab open
 const VOICE_URL = 'https://voice.google.com/';
 
@@ -195,10 +195,12 @@ async function onCapture({ url, body, reqBody }) {
     if (keys.length > 30) delete health.shapes[keys[0]];
   }
 
-  // keep local samples of the new API automatically (never uploaded; admin downloads them redacted)
-  if (st.debugRecord || (!legacy && path !== 'push-channel')) {
-    const samples = (st.samples || []).slice(-(MAX_SAMPLES - 1));
-    samples.push({ url, at: Date.now(), body: body.slice(0, 200000), reqBody });
+  // Local sample ring (never uploaded): last 4 responses per endpoint so rare ones (call history) survive.
+  if (st.debugRecord || path !== 'push-channel') {
+    let samples = st.samples || [];
+    const same = samples.filter((x) => x.path === path);
+    if (same.length >= 4) samples = samples.filter((x) => x !== same[0]);
+    samples = [...samples, { path, url, at: Date.now(), body: body.slice(0, 200000), reqBody }].slice(-MAX_SAMPLES);
     await set({ samples });
   }
 
