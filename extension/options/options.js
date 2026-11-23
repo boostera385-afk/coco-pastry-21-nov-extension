@@ -70,3 +70,5 @@ $('download').addEventListener('click', async () => {
 });
 chrome.storage.onChanged.addListener(load);
 load();
+
+document.querySelectorAll('.cy').forEach((e) => { e.textContent = String(new Date().getFullYear()); });

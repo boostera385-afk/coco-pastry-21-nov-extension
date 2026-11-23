@@ -81,3 +81,5 @@ $('openDash').addEventListener('click', () => chrome.tabs.create({ url: DASHBOAR
 $('settings').addEventListener('click', (e) => { e.preventDefault(); chrome.runtime.openOptionsPage(); });
 chrome.storage.onChanged.addListener(render);
 render();
+
+document.querySelectorAll('.cy').forEach((e) => { e.textContent = String(new Date().getFullYear()); });

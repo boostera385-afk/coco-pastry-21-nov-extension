@@ -840,3 +840,5 @@ async function renderSettings(view) {
 }
 
 start();
+
+document.querySelectorAll('.cy').forEach((e) => { e.textContent = String(new Date().getFullYear()); });
