@@ -619,7 +619,7 @@ function diagHtml(a) {
   const h = a.last_health || {};
   const net = Object.entries(h.net || {}).sort((x, y) => y[1] - x[1]).slice(0, 12);
   const row = (k, v) => `<tr><td class="muted">${esc(k)}</td><td>${v}</td></tr>`;
-  return `<div class="two"><table><tbody>
+  return `<div class="two"><div class="table-wrap"><table class="wrap"><tbody>
       ${row('Status', esc(h.status || '—'))}
       ${row('Extension / parser', `${esc(h.extensionVersion || '?')} / ${esc(h.parserVersion || a.parser_version || '?')}`)}
       ${row('Last check-in', a.last_heartbeat_at ? `${fmtTime(a.last_heartbeat_at)} (${ago(a.last_heartbeat_at)})` : 'never')}
@@ -629,7 +629,7 @@ function diagHtml(a) {
       ${row('Total responses read / events parsed', `${n(h.captures)} / ${n(h.parsed)} (unclassified ${n(h.unknown)})`)}
       ${row('Last data read', h.lastCaptureAt ? ago(new Date(h.lastCaptureAt).toISOString()) : 'never')}
       ${row('Needs Voice reload', h.needsVoiceReload ? '<b style="color:var(--yellow)">yes</b>' : 'no')}
-    </tbody></table>
+    </tbody></table></div>
     <div><div class="small muted">Google endpoints the Voice page called (count)</div>
       <table><tbody>${net.map(([k, v]) => `<tr><td class="small" style="white-space:normal;word-break:break-all">${esc(k)}</td><td class="num">${n(v)}</td></tr>`).join('') || '<tr><td class="muted small">none reported yet</td></tr>'}</tbody></table></div></div>`;
 }
