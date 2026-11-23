@@ -54,7 +54,7 @@
     <div class="hd"><div class="brand">COCO <span>VOICE</span></div><button class="x" title="Close (keeps tracking)">×</button></div>
     <div class="st"><span class="dot"></span><span class="stt">…</span></div>
     <div class="grid">
-      <div class="k hero"><div class="l">Outbound reaches today</div><div class="num" data-k="outboundReaches">0</div></div>
+      <div class="k hero"><div class="l">Outbound today (calls + texts)</div><div class="num" data-k="outboundTotal">0</div></div>
       <div class="k"><div class="l">Calls out</div><div class="num" data-k="outboundCalls">0</div></div>
       <div class="k"><div class="l">Texts out</div><div class="num" data-k="outboundTexts">0</div></div>
       <div class="k g" data-tile="in"><div class="l">Calls in</div><div class="num" data-k="inboundCalls">0</div></div>
@@ -75,7 +75,7 @@
     const level = state.status?.level || 'warn';
     root.querySelectorAll('.dot').forEach((d) => { d.className = `dot ${level}`; });
     $('.stt').textContent = state.status?.text || 'Starting…';
-    $('.n').textContent = s.outboundReaches ?? 0;
+    $('.n').textContent = s.outboundTotal ?? 0;
     root.querySelectorAll('[data-k]').forEach((el) => { el.textContent = s[el.dataset.k] ?? 0; });
     const tileIn = $('[data-tile="in"]');
     tileIn.classList.toggle('r', (s.missedCalls || 0) > 0);

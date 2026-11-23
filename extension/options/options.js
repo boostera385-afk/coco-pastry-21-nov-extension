@@ -19,8 +19,8 @@ async function load() {
   $('showWidget').checked = st.showWidget !== false;
   $('debugRecord').checked = !!st.debugRecord;
   const tz = st.timezone || DEFAULT_TZ;
-  const since = st.trackingStart ? new Date(st.trackingStart).toLocaleString('en-US', { timeZone: tz }) : '—';
-  $('trackInfo').textContent = `Tracking from ${since} (install day onward) · business timezone ${tz}${st.paused ? ' · PAUSED' : ''}`;
+  const since = st.trackingStart ? new Date(st.trackingStart).toLocaleString('en-US', { timeZone: tz }) : 'not started — connect your token';
+  $('trackInfo').textContent = `Tracking from ${since} (no old history) · Pakistan time${st.paused ? ' · PAUSED' : ''}`;
   const h = st.health || {};
   const checks = h.sendChecks || [];
   $('health').textContent = [

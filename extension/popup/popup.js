@@ -19,7 +19,8 @@ async function render() {
   const from = range === 'today' ? today : addDays(today, range === '7d' ? -6 : -29);
   const r = summarize(Object.values(st.events || {}), from, today, tz);
 
-  for (const k of ['outboundReaches', 'outboundCalls', 'outboundTexts', 'inboundCalls', 'inboundTexts']) $(k).textContent = r[k];
+  for (const k of ['outboundTotal', 'outboundCalls', 'outboundTexts', 'inboundCalls', 'inboundTexts']) $(k).textContent = r[k];
+  $('outSub').textContent = `every call and text · ${r.contactsReached} contact${r.contactsReached === 1 ? '' : 's'} · ${r.inboundTotal} inbound`;
   $('connected').textContent = `${r.connectedCalls} connected`;
   $('missed').textContent = `${r.missedCalls} missed`;
   $('callsInTile').classList.toggle('r', r.missedCalls > 0);
@@ -34,8 +35,8 @@ async function render() {
   $('openVoice').hidden = level !== 'warn' || !/Open Google Voice/.test(st.status?.text || '');
   $('setup').hidden = !!st.agentToken;
   $('since').textContent = st.trackingStart
-    ? `Tracking since ${new Date(st.trackingStart).toLocaleDateString('en-US', { timeZone: tz })} · ${tz} time`
-    : '';
+    ? `Tracking since ${new Date(st.trackingStart).toLocaleString('en-US', { timeZone: tz, dateStyle: 'medium', timeStyle: 'short' })} · Pakistan time`
+    : 'Tracking starts when you connect your token.';
 
   paused = !!st.paused;
   $('pause').textContent = paused ? 'Resume' : 'Pause';

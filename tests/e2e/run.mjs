@@ -19,7 +19,7 @@ const env = Object.fromEntries(fs.readFileSync(path.join(ROOT, '.env'), 'utf8').
   .filter((l) => /^[A-Z_]+=/.test(l)).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1).trim()]));
 const URL_ = env.SUPABASE_URL;
 const ANON = fs.readFileSync(path.join(ROOT, 'dashboard/config.js'), 'utf8').match(/eyJ[^']+/)[0];
-const TZ = 'America/New_York';
+const TZ = 'Asia/Karachi';
 const PORT = 9333;
 
 // ---------------- helpers ----------------
@@ -160,16 +160,18 @@ async function main() {
 
   // ===== 1. Connect with token only =====
   await cdp.eval(optS, "document.getElementById('agentToken').value = 'not-a-token'; document.getElementById('connect').click(); true");
-  const badMsg = await waitFor(async () => { const t = await cdp.eval(optS, "document.getElementById('msg').textContent"); return /✗|✓/.test(t) && t; }, 5000);
-  check('connect: malformed token is rejected with a clear message', /doesn't look like a Coco token/.test(badMsg || ''), badMsg);
+  const badMsg = await waitFor(async () => { const t = await cdp.eval(optS, "document.getElementById('msg').textContent"); return /✗|✓/.test(t) && t; }, 15000);
+  const badNow = await cdp.eval(optS, "document.getElementById('msg').textContent");
+  check('connect: malformed token is rejected with a clear message', /doesn't look like a Coco token/.test(badMsg || ''), `shown: "${badNow}"`);
+  const connectAt = Date.now();
   await cdp.eval(optS, `document.getElementById('agentToken').value = '${token}'; document.getElementById('connect').click(); true`);
   const okMsg = await waitFor(async () => { const t = await cdp.eval(optS, "document.getElementById('msg').textContent"); return /Connected|✗/.test(t) && t; }, 20000);
   check('connect: valid token shows "Connected as E2E Bot"', /Connected as E2E Bot/.test(okMsg || ''), okMsg);
   const [{ tracking_start: ts0 }] = await sql(`select tracking_start from agents where id = '${agentId}'`);
-  check('server sets tracking start = install day 00:00 (business TZ)', ts0 && new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date(ts0)) === todayKey && new Date(ts0).toLocaleTimeString('en-US', { timeZone: TZ, hour12: false }).startsWith('00:00'), String(ts0));
+  check('tracking starts at the moment of connecting (no old history)', ts0 && Math.abs(Date.parse(ts0) - connectAt) < 60e3, `${ts0} vs ${new Date(connectAt).toISOString()}`);
 
   // ===== 2. Capture a normal session =====
-  const sc = F.scenario(Date.now());
+  const sc = F.scenario(Date.now() + 60 * 60e3, connectAt); // session happens after connecting
   threads = sc.threads;
   check('mock Voice page loads (fetch + XHR intercepted)', await loadVoice());
   const widget = await cdp.eval(pageS, "!!document.getElementById('coco-voice-widget')");
@@ -177,13 +179,14 @@ async function main() {
   let st = await store();
   check('agent Voice number auto-detected from account/get', st.agentNumber === F.AGENT, st.agentNumber);
   const s1 = st.summaryToday || {};
-  for (const k of ['outboundReaches', 'outboundCalls', 'connectedCalls', 'outboundTexts', 'inboundCalls', 'missedCalls', 'inboundTexts', 'voicemails']) {
+  for (const k of ['outboundTotal', 'inboundTotal', 'contactsReached', 'outboundCalls', 'connectedCalls', 'outboundTexts', 'inboundCalls', 'missedCalls', 'inboundTexts', 'voicemails']) {
     check(`panel/badge summary: ${k} = ${sc.expect[k]}`, s1[k] === sc.expect[k], `got ${s1[k]}`);
   }
-  check('event before install day is ignored', !Object.values(st.events || {}).some((e) => e.c === F.C));
+  check('event from 3 days ago is ignored', !Object.values(st.events || {}).some((e) => e.c === F.C));
+  check('event 10 min BEFORE connecting is ignored (no old history)', !Object.values(st.events || {}).some((e) => e.c === F.H));
   check('unknown type code counted as unclassified locally', (st.health?.unknown || 0) >= 1, JSON.stringify(st.health));
   const badge = await cdp.eval(swS, 'chrome.action.getBadgeText({})');
-  check(`toolbar badge shows today's reaches (${sc.expect.outboundReaches})`, badge === String(sc.expect.outboundReaches), `badge "${badge}"`);
+  check(`toolbar badge shows today's outbound total (${sc.expect.outboundTotal})`, badge === String(sc.expect.outboundTotal), `badge "${badge}"`);
 
   await syncNow();
   st = await waitFor(async () => { const x = await store(); return (x.queue || []).length === 0 && x.lastSyncAt && x; }, 20000);
@@ -216,7 +219,7 @@ async function main() {
   st = await store();
   const chk = (st.health?.sendChecks || []).at(-1);
   check('sent-text self-check: outgoing SMS request matched by a parsed outbound text', chk?.matched === true, JSON.stringify(chk));
-  check('reach still counted once per contact per day after another text to A', st.summaryToday?.outboundReaches === sc.expect.outboundReaches, `got ${st.summaryToday?.outboundReaches}`);
+  check('another text to A counts again (every text counts; contacts stay 2)', st.summaryToday?.outboundTotal === sc.expect.outboundTotal + 1 && st.summaryToday?.contactsReached === 2, JSON.stringify(st.summaryToday));
 
   // ===== 5. Side panel UI =====
   await syncNow();
@@ -224,10 +227,10 @@ async function main() {
   const panelS = await openExtPage('popup/popup.html');
   await sleep(800);
   const panel = await cdp.eval(panelS, `({ status: document.getElementById('statusText').textContent, who: document.getElementById('who').textContent,
-    reaches: document.getElementById('outboundReaches').textContent, textsOut: document.getElementById('outboundTexts').textContent,
+    outTotal: document.getElementById('outboundTotal').textContent, textsOut: document.getElementById('outboundTexts').textContent,
     pause: document.getElementById('pause').textContent })`);
   check('side panel shows "Tracking" + "Connected as E2E Bot"', panel.status === 'Tracking' && /Connected as E2E Bot/.test(panel.who), JSON.stringify(panel));
-  check('side panel numbers match (reaches, texts out)', panel.reaches === String(sc.expect.outboundReaches) && panel.textsOut === String(sc.expect.outboundTexts + 1), JSON.stringify(panel));
+  check('side panel numbers match (outbound total, texts out)', panel.outTotal === String(sc.expect.outboundTotal + 1) && panel.textsOut === String(sc.expect.outboundTexts + 1), JSON.stringify(panel));
 
   // ===== 6. Pause / resume =====
   cdp.on((m) => { if (m.method === 'Page.javascriptDialogOpening' && m.sessionId === panelS) cdp.send('Page.handleJavaScriptDialog', { accept: true }, panelS); });
@@ -235,7 +238,7 @@ async function main() {
   st = await waitFor(async () => { const x = await store(); return x.paused && x; }, 5000);
   check('Pause (with confirmation) sets paused state', st?.paused === true);
   check('badge shows II while paused', (await cdp.eval(swS, 'chrome.action.getBadgeText({})')) === 'II');
-  threads = [...threads, F.scenarioPaused(Date.now())];
+  threads = [...threads, F.scenarioPaused(Date.now() + 70 * 60e3)];
   await loadVoice();
   st = await store();
   check('while paused, new Voice activity is NOT captured', !Object.values(st.events || {}).some((e) => e.c === F.E));
@@ -254,12 +257,16 @@ async function main() {
 
   // ===== 7. Dashboard metrics + security (real RPCs with real user JWTs) =====
   const [m] = await rest(adminJwt, 'rpc/metrics_summary', { p_from: todayKey, p_to: todayKey, p_agent: agentId });
-  const want = { outbound_reaches: 2, outbound_calls: 1, connected_calls: 1, outbound_texts: 4, inbound_calls: 2, missed_calls: 1, inbound_texts: 2, voicemails: 1, unclassified: 1 };
+  const want = { outbound_total: 5, inbound_total: 5, contacts_reached: 2, outbound_calls: 1, connected_calls: 1, outbound_texts: 4, inbound_calls: 2, missed_calls: 1, inbound_texts: 2, voicemails: 1, unclassified: 1 };
   for (const [k, v] of Object.entries(want)) check(`dashboard metrics_summary.${k} = ${v}`, Number(m?.[k]) === v, `got ${m?.[k]}`);
   check('dashboard reply rate = 50% (A replied, group contact did not)', Number(m?.response_rate) === 50, `got ${m?.response_rate}`);
   check('dashboard avg reply time = 5 min (A texted, agent called 5 min later)', Number(m?.avg_reply_min) === 5, `got ${m?.avg_reply_min}`);
   const daily = await rest(adminJwt, 'rpc/metrics_daily', { p_from: todayKey, p_to: todayKey, p_agent: agentId });
-  check('dashboard daily trend row for today', daily?.[0]?.outbound_reaches === 2, JSON.stringify(daily));
+  check('dashboard daily trend row for today (outbound 5, inbound 5)', Number(daily?.[0]?.outbound_total) === 5 && Number(daily?.[0]?.inbound_total) === 5, JSON.stringify(daily));
+  const contacts = await rest(adminJwt, 'rpc/contact_activity', { p_from: todayKey, p_to: todayKey, p_agent: agentId, p_search: null });
+  const cA = (contacts || []).find((c) => c.contact === F.A);
+  check('contacts: one row per contact (A, B, D, G1, E)', Array.isArray(contacts) && contacts.length === 5, `got ${contacts?.length}`);
+  check('contacts: A has every call and text under it (1 call out, 3 texts out, 1 text in = 5)', cA && Number(cA.calls_out) === 1 && Number(cA.texts_out) === 3 && Number(cA.texts_in) === 1 && Number(cA.total) === 5, JSON.stringify(cA));
   const convs = await rest(adminJwt, 'rpc/conversation_list', { p_from: todayKey, p_to: todayKey, p_agent: agentId, p_search: null });
   check('manager/admin sees conversations list', Array.isArray(convs) && convs.length >= 4, `got ${convs?.length}`);
   const search = await rest(adminJwt, 'rpc/conversation_list', { p_from: todayKey, p_to: todayKey, p_agent: agentId, p_search: 'Booked' });
@@ -269,7 +276,9 @@ async function main() {
   const agentConvs = await rest(agentJwt, 'rpc/conversation_list', { p_from: todayKey, p_to: todayKey, p_agent: null, p_search: null });
   check('agent-role user gets no conversation list', Array.isArray(agentConvs) && agentConvs.length === 0);
   const agentMetrics = await rest(agentJwt, 'rpc/metrics_summary', { p_from: todayKey, p_to: todayKey, p_agent: null });
-  check('agent-role user sees only their own metrics row', Array.isArray(agentMetrics) && agentMetrics.length === 1 && agentMetrics[0].agent_id === agentId && agentMetrics[0].avg_score === null, JSON.stringify(agentMetrics).slice(0, 160));
+  check('agent-role user sees only their own metrics row (own numbers)', Array.isArray(agentMetrics) && agentMetrics.length === 1 && agentMetrics[0].agent_id === agentId && Number(agentMetrics[0].outbound_total) === 5, JSON.stringify(agentMetrics).slice(0, 160));
+  const agentContacts = await rest(agentJwt, 'rpc/contact_activity', { p_from: todayKey, p_to: todayKey, p_agent: null, p_search: null });
+  check('agent-role user cannot see the contacts list (admin only)', Array.isArray(agentContacts) && agentContacts.length === 0);
   const anonMsgs = await rest(ANON, `messages?select=id&agent_id=eq.${agentId}`);
   check('anonymous visitor reads nothing', Array.isArray(anonMsgs) && anonMsgs.length === 0);
 
@@ -286,14 +295,19 @@ async function main() {
   await sleep(3000);
   const tiles = await cdp.eval(dS, "[...document.querySelectorAll('.kpis .kpi')].map((k) => [k.querySelector('.label').textContent.trim(), k.querySelector('.value').textContent.trim()])");
   const tile = Object.fromEntries(tiles || []);
-  check('dashboard UI tiles: reaches 2, calls out 1, texts out 4, calls in 2, texts in 2',
-    tile['Outbound reaches'] === '2' && tile['Calls out'] === '1' && tile['Texts out'] === '4' && tile['Calls in'] === '2' && tile['Texts in'] === '2', JSON.stringify(tile));
+  check('dashboard UI tiles: outbound 5, calls out 1, texts out 4, inbound 5, calls in 2, texts in 2',
+    tile.Outbound === '5' && tile['Calls out'] === '1' && tile['Texts out'] === '4' && tile.Inbound === '5' && tile['Calls in'] === '2' && tile['Texts in'] === '2', JSON.stringify(tile));
   const callsInRed = await cdp.eval(dS, "[...document.querySelectorAll('.kpis .kpi')].find((k) => k.textContent.includes('Calls in'))?.classList.contains('r')");
   check('dashboard UI: "Calls in" tile is red when calls were missed', callsInRed === true);
   const insightText = await cdp.eval(dS, "document.querySelector('.insights')?.textContent || ''");
   check('dashboard UI: analysis panel mentions the missed call', /missed/.test(insightText), insightText.slice(0, 160));
   const agentRow = await cdp.eval(dS, "[...document.querySelectorAll('tbody tr')].map((r) => r.textContent).find((t) => t.includes('E2E Bot')) || ''");
-  check('dashboard UI: agents table shows E2E Bot as Workspace + Tracking', /Workspace/.test(agentRow) && /Tracking/.test(agentRow), agentRow.replace(/\s+/g, ' ').slice(0, 200));
+  check('dashboard UI: agents table shows E2E Bot as Tracking', /Tracking/.test(agentRow), agentRow.replace(/\s+/g, ' ').slice(0, 200));
+  await cdp.eval(dS, "location.hash = '#/contacts'; true");
+  const contactRows = await waitFor(() => cdp.eval(dS, "document.querySelectorAll('#ctable tbody tr.click').length"), 10000);
+  check('dashboard UI: Contacts page lists every contact', contactRows === 5, `got ${contactRows}`);
+  const navText = await cdp.eval(dS, "document.getElementById('navLinks').textContent");
+  check('dashboard UI: no Reports / Claude page (on hold)', !/Reports|coaching/i.test(navText) && /Contacts/.test(navText), navText);
   await cdp.eval(dS, "location.hash = '#/conversations'; true");
   const convItems = await waitFor(() => cdp.eval(dS, "document.querySelectorAll('#clist .item').length"), 10000);
   check('dashboard UI: conversations page lists threads', convItems >= 4, `got ${convItems}`);

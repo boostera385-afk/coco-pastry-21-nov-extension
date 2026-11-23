@@ -102,17 +102,15 @@ Coco/
 - Customer messages are personal data: define a retention period, restrict who can read transcripts, and check local rules on storing/analyzing customer communications (and on outbound texting consent, e.g. TCPA in the US).
 - Host permission limited to `https://voice.google.com/*` and the Supabase project URL.
 
-## 8. Decisions (confirmed 2026-11-23)
+## 8. Decisions — department instructions (2026-11-23, supersede earlier choices)
 
-| # | Question | Decision | Where it lives |
-|---|---|---|---|
-| 1 | Personal or Workspace Voice? How many numbers? | **Both supported.** Any number of agents; one token per agent. Capture is identical (same voice.google.com web app). | `agents.account_type`, Settings → Agents |
-| 2 | "Outbound reach" | **Unique contact once per agent per business day** (call or text). Raw call/text counts shown alongside. | `metrics_summary`, `metrics_daily`, popup `summarize()` |
-| 3 | Backfill history? | **No.** Tracking starts 00:00 (business TZ) of the install day. Older events are dropped in the extension *and* in `ingest_batch`. | `agents.tracking_start` |
-| 4 | Who sees transcripts? | **Managers/admins only.** Agents see their own counts + coaching reports, never message text. | RLS in migration |
-| 5 | Claude analysis timing | **Admin setting:** manual / hourly / daily at HH:MM / weekly on a day. Plus "Run analysis now" button. | `app_settings`, `analysis_due()`, `analysis_requests` |
-| 6 | Review points | **Sales/customer-service best practices** rubric — see [03](03-CLAUDE-ANALYSIS-HANDOFF.md). | worker prompt |
-| 7 | Business timezone | **US, admin-selectable** (Eastern default; Central, Mountain, Arizona, Pacific, Alaska, Hawaii). | `app_settings.business_timezone` |
-| 8 | Dashboard stack | Static HTML + plain JS + supabase-js (CDN), no build step. Host on any static host. | `dashboard/` |
+| # | Instruction | Implemented as |
+|---|---|---|
+| 1 | Always a **Google Voice business** account | All agents are `workspace`; enforced by a DB check constraint. No Personal option. |
+| 2 | **Every call and every text**, under each contact | Totals count every call/text (no once-per-day de-duplication). New **Contacts** page + `contact_activity` RPC lists every contact with its calls/texts. |
+| 3 | Start tracking **when we start working**, **no old history** | Tracking starts at the exact moment the agent connects their token (`agents.tracking_start`); anything earlier is dropped in the extension and server. |
+| 4 | **Only Admin** sees everything; standalone dashboard | Roles: **Admin** (everything) and **Agent** (only their own numbers, no transcripts/contacts). Manager role retired. Separate app + separate Supabase project. |
+| 5, 7 | **Hold Claude** analysis / work | Reports page, AI scores and Analyze buttons removed; `analysis_mode = manual`. Tables kept for later. |
+| 6 | **Pakistan** time zone | `Asia/Karachi` in DB, dashboard and extension. |
 
 Still open: verify the Google Voice payload field map (Phase 0) — see `README.md` → "Parser check".

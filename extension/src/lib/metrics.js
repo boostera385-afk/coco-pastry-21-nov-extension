@@ -1,7 +1,7 @@
 // Shared date + metric helpers (used by background and popup).
-// Rule: a contact counts as ONE outbound reach per business day (business timezone).
+// Rule (department, 2026-11-23): every call and every text counts; contacts = distinct numbers in the range.
 
-export const DEFAULT_TZ = 'America/New_York';
+export const DEFAULT_TZ = 'Asia/Karachi';
 
 /** YYYY-MM-DD of a timestamp in the given IANA timezone. */
 export function dayKey(ms, tz = DEFAULT_TZ) {
@@ -50,24 +50,23 @@ export function addDays(key, n) {
  */
 export function summarize(events, fromKey, toKey, tz = DEFAULT_TZ) {
   const r = {
-    outboundCalls: 0, connectedCalls: 0, outboundTexts: 0, outboundReaches: 0,
-    inboundCalls: 0, missedCalls: 0, inboundTexts: 0, voicemails: 0, inboundContacts: 0,
+    outboundTotal: 0, inboundTotal: 0, contactsReached: 0,
+    outboundCalls: 0, connectedCalls: 0, outboundTexts: 0,
+    inboundCalls: 0, missedCalls: 0, inboundTexts: 0, voicemails: 0,
   };
-  const outReach = new Set();
-  const inReach = new Set();
+  const reached = new Set();
   for (const e of events) {
     const day = dayKey(e.at, tz);
     if (day < fromKey || day > toKey) continue;
-    const key = `${e.c}|${day}`;
     if (e.k === 'call' && e.d === 'out') { r.outboundCalls++; if (e.o === 'answered' || e.s > 0) r.connectedCalls++; }
     if (e.k === 'text' && e.d === 'out') r.outboundTexts++;
     if (e.k === 'call' && e.d === 'in') { r.inboundCalls++; if (e.o === 'missed' || e.o === 'voicemail') r.missedCalls++; }
     if (e.k === 'text' && e.d === 'in') r.inboundTexts++;
     if (e.k === 'voicemail') r.voicemails++;
-    if (e.d === 'out' && e.c) outReach.add(key);
-    if (e.d === 'in' && e.c) inReach.add(key);
+    if (e.d === 'out' && (e.k === 'call' || e.k === 'text')) r.outboundTotal++;
+    if (e.d === 'in') r.inboundTotal++;
+    if (e.d === 'out' && e.c) reached.add(e.c);
   }
-  r.outboundReaches = outReach.size;
-  r.inboundContacts = inReach.size;
+  r.contactsReached = reached.size;
   return r;
 }

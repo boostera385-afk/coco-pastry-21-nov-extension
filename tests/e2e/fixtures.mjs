@@ -9,6 +9,7 @@ export const C = '+15550100003'; // old event (before tracking start)
 export const D = '+15550100004'; // inbound answered call, agent never replies
 export const E = '+15550100005'; // arrives while paused
 export const G1 = '+15550100006'; // group thread member
+export const H = '+15550100007'; // activity 10 min BEFORE connecting (must be ignored)
 
 let seq = 0;
 const id = (tag) => `e2e${tag}${(++seq).toString(16).padStart(6, '0')}${'0'.repeat(28)}`.slice(0, 40);
@@ -25,8 +26,9 @@ export const thread = (tid, msgs) => [tid, 1, msgs];
 export const listBody = (threads) => `)]}'\n${JSON.stringify([threads, 'cursor-e2e'])}`;
 export const accountBody = () => `)]}'\n${JSON.stringify([[null, [[AGENT]], 'e2e@example.com']])}`;
 
-/** Scenario 1 — a normal working session today. Returns the payload and what we expect to count. */
-export function scenario(now) {
+/** Scenario 1 — a working session that happens after the agent connected (now = end of the session).
+ *  connectAt = the moment the token was connected; anything before it must be ignored. */
+export function scenario(now, connectAt) {
   const min = 60e3;
   const t = (m) => now - m * min;
   const tA = `t.${A}`; const tB = `t.${B}`; const tC = `t.${C}`; const tD = `t.${D}`;
@@ -54,12 +56,17 @@ export function scenario(now) {
     thread(tA, [
       msg({ tag: 'u1', at: t(10), phone: A, type: 99, thread: tA }),                       // unknown code
     ]),
+    thread(`t.${H}`, [
+      msg({ tag: 'h1', at: connectAt - 10 * min, phone: H, type: 11, text: 'sent before connecting', thread: `t.${H}` }),
+    ]),
   ];
   const expect = {
-    // local panel / DB (today, business TZ)
-    outboundReaches: 2,      // A (text+call+text = once) + G1
+    // local panel / DB (today, Pakistan time). Every call and every text counts.
+    outboundTotal: 4,        // a1 text, a3 call, a4 text, g1 text
+    inboundTotal: 4,         // a2 text, b1 call, b2 voicemail, d1 call
+    contactsReached: 2,      // A, G1
     outboundCalls: 1, connectedCalls: 1,
-    outboundTexts: 3,        // a1, a4, g1   (c1 is before tracking start)
+    outboundTexts: 3,        // a1, a4, g1   (c1 3 days ago and h1 before connecting are ignored)
     inboundCalls: 2, missedCalls: 1,   // b1 missed, d1 answered
     inboundTexts: 1,         // a2
     voicemails: 1,           // b2

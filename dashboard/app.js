@@ -7,14 +7,14 @@ const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const n = (v) => Number(v || 0).toLocaleString('en-US');
 const pct = (a, b) => (b ? `${Math.round((100 * a) / b)}%` : '—');
 const TZ_NAMES = {
+  'Asia/Karachi': 'Pakistan',
   'America/New_York': 'Eastern', 'America/Chicago': 'Central', 'America/Denver': 'Mountain',
   'America/Phoenix': 'Arizona', 'America/Los_Angeles': 'Pacific', 'America/Anchorage': 'Alaska', 'Pacific/Honolulu': 'Hawaii',
 };
-const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
 const state = { user: null, role: null, agentId: null, settings: null, agents: [], range: '7d', from: null, to: null, agent: '' };
-const isMgr = () => state.role === 'admin' || state.role === 'manager';
-const tz = () => state.settings?.business_timezone || 'America/New_York';
+const isMgr = () => state.role === 'admin'; // admin sees everything; agents see only their own numbers
+const tz = () => state.settings?.business_timezone || 'Asia/Karachi';
 
 // ---------- dates (business timezone) ----------
 const dayKey = (ms) => new Intl.DateTimeFormat('en-CA', { timeZone: tz(), year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms));
@@ -93,6 +93,10 @@ async function boot() {
     showLogin(`Signed in as ${state.user.email}, but you don't have access yet. Ask an admin to add you in Settings → Users, then reload this page.`, true);
     return;
   }
+  if (prof.role !== 'admin' && prof.role !== 'agent') {
+    showLogin(`Signed in as ${state.user.email}, but this account has no dashboard access. Ask an admin.`, true);
+    return;
+  }
   state.role = prof.role;
   state.agentId = prof.agent_id;
   const [{ data: settings }, { data: agents }] = await Promise.all([
@@ -110,7 +114,7 @@ async function boot() {
     + state.agents.map((a) => `<option value="${a.id}">${esc(a.name)}${a.active ? '' : ' (inactive)'}</option>`).join('');
   $('#agentFilter').hidden = !isMgr();
 
-  const links = [['overview', 'Overview'], ...(isMgr() ? [['conversations', 'Conversations']] : []), ['reports', isMgr() ? 'Reports' : 'My coaching'], ...(isMgr() ? [['settings', state.role === 'admin' ? 'Settings' : 'Team']] : []), ['account', 'Account']];
+  const links = [['overview', 'Overview'], ...(isMgr() ? [['contacts', 'Contacts'], ['conversations', 'Conversations'], ['settings', 'Settings']] : []), ['account', 'Account']];
   $('#navLinks').innerHTML = links.map(([k, l]) => `<a href="#/${k}" data-k="${k}">${l}</a>`).join('');
   route();
 }
@@ -236,7 +240,7 @@ async function route() {
   view.innerHTML = '<div class="empty">Loading…</div>';
   try {
     if (page === 'conversations' && isMgr()) await renderConversations(view, arg);
-    else if (page === 'reports') await renderReports(view);
+    else if (page === 'contacts' && isMgr()) await renderContacts(view);
     else if (page === 'settings' && isMgr()) await renderSettings(view);
     else if (page === 'account') await renderAccount(view);
     else await renderOverview(view);
@@ -246,13 +250,15 @@ async function route() {
 }
 
 // ---------- overview ----------
+// Department rule: every call and every text counts (no "once per day" de-duplication).
 function totals(rows) {
   const t = {};
-  const keys = ['outbound_reaches', 'outbound_calls', 'connected_calls', 'outbound_texts', 'inbound_calls', 'missed_calls', 'inbound_texts', 'voicemails', 'inbound_contacts', 'unclassified'];
+  const keys = ['outbound_total', 'inbound_total', 'contacts_reached', 'outbound_calls', 'connected_calls', 'outbound_texts',
+    'inbound_calls', 'missed_calls', 'inbound_texts', 'voicemails', 'unclassified'];
   keys.forEach((k) => { t[k] = rows.reduce((s, r) => s + Number(r[k] || 0), 0); });
   const w = rows.filter((r) => r.response_rate != null);
-  const ww = w.reduce((s, r) => s + Number(r.outbound_reaches), 0);
-  t.response_rate = ww ? w.reduce((s, r) => s + r.response_rate * r.outbound_reaches, 0) / ww : null;
+  const ww = w.reduce((s, r) => s + Number(r.contacts_reached), 0);
+  t.response_rate = ww ? w.reduce((s, r) => s + r.response_rate * r.contacts_reached, 0) / ww : null;
   const rr = rows.filter((r) => r.avg_reply_min != null);
   t.avg_reply_min = rr.length ? rr.reduce((s, r) => s + Number(r.avg_reply_min), 0) / rr.length : null;
   return t;
@@ -267,10 +273,10 @@ function insights(t, rows, daily) {
   }
   if (t.avg_reply_min != null) out.push([t.avg_reply_min > 60 ? 'bad' : 'good', `Average reply time to customers: ${mins(t.avg_reply_min)}${t.avg_reply_min > 60 ? ' — target is under 15 min during business hours.' : '.'}`]);
   if (t.response_rate != null) out.push(['', `${t.response_rate.toFixed(0)}% of contacts reached replied within 7 days.`]);
-  const top = rows.filter((r) => r.outbound_reaches > 0)[0];
-  if (top && rows.length > 1) out.push(['good', `Top outreach: ${top.agent_name} with ${n(top.outbound_reaches)} reaches.`]);
-  const best = [...daily].sort((a, b) => b.outbound_reaches - a.outbound_reaches)[0];
-  if (best && best.outbound_reaches > 0 && daily.length > 1) out.push(['', `Busiest day: ${fmtDay(best.day)} (${n(best.outbound_reaches)} reaches).`]);
+  const top = rows.filter((r) => r.outbound_total > 0)[0];
+  if (top && rows.length > 1) out.push(['good', `Most outbound: ${top.agent_name} with ${n(top.outbound_total)} calls + texts.`]);
+  const best = [...daily].sort((a, b) => b.outbound_total - a.outbound_total)[0];
+  if (best && best.outbound_total > 0 && daily.length > 1) out.push(['', `Busiest day: ${fmtDay(best.day)} (${n(best.outbound_total)} outbound).`]);
   rows.filter((r) => isSilent(r)).forEach((r) => out.push(['bad', `${r.agent_name}: extension not reporting (last seen ${ago(r.last_heartbeat_at)}). Ask them to open Google Voice in Chrome.`]));
   if (t.unclassified) out.push(['bad', `${n(t.unclassified)} Voice events could not be classified yet — the parser map needs checking.`]);
   if (!out.length) out.push(['', 'No activity in this period yet.']);
@@ -282,42 +288,43 @@ const isSilent = (r) => !r.last_heartbeat_at || Date.now() - Date.parse(r.last_h
 function connBadge(a) {
   if (!a.last_heartbeat_at) return '<span class="dot"></span> Not connected yet';
   if (a.last_health?.paused) return `<span class="dot warn"></span> Paused <span class="small muted">${ago(a.last_health.pausedAt || a.last_heartbeat_at)}</span>`;
-  const mins = (Date.now() - Date.parse(a.last_heartbeat_at)) / 60e3;
-  if (mins <= 30) return `<span class="dot ok"></span> Tracking <span class="small muted">${ago(a.last_heartbeat_at)}</span>`;
-  return `<span class="dot ${mins > 1440 ? 'bad' : 'warn'}"></span> Last seen ${ago(a.last_heartbeat_at)}`;
+  const m = (Date.now() - Date.parse(a.last_heartbeat_at)) / 60e3;
+  if (m <= 30) return `<span class="dot ok"></span> Tracking <span class="small muted">${ago(a.last_heartbeat_at)}</span>`;
+  return `<span class="dot ${m > 1440 ? 'bad' : 'warn'}"></span> Last seen ${ago(a.last_heartbeat_at)}`;
 }
 
 function barChart(daily) {
   if (!daily.length) return '<div class="empty">No data</div>';
   const W = 720, H = 220, P = 26;
-  const peak = Math.max(0, ...daily.map((d) => Math.max(Number(d.outbound_reaches), Number(d.inbound_calls) + Number(d.inbound_texts))));
+  const peak = Math.max(0, ...daily.map((d) => Math.max(Number(d.outbound_total), Number(d.inbound_total))));
   const max = Math.max(4, Math.ceil(peak / 2) * 2); // even number >= 4 so axis ticks are distinct integers
   const bw = (W - P) / daily.length;
   const bar = Math.max(2, Math.min(18, bw / 2 - 3));
   const y = (v) => H - P - ((H - P - 8) * v) / max;
   const every = Math.ceil(daily.length / 10);
-  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Daily outbound reaches and inbound activity">`;
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Daily outbound and inbound calls and texts">`;
   [0, max / 2, max].forEach((v) => { s += `<line x1="${P}" x2="${W}" y1="${y(v)}" y2="${y(v)}" stroke="#262626"/><text x="${P - 6}" y="${y(v) + 4}" fill="#c0c0c0" font-size="10" text-anchor="end">${v}</text>`; });
   daily.forEach((d, i) => {
     const x = P + i * bw + bw / 2;
-    const inb = Number(d.inbound_calls) + Number(d.inbound_texts);
-    s += `<rect x="${x - bar - 1}" y="${y(d.outbound_reaches)}" width="${bar}" height="${H - P - y(d.outbound_reaches)}" fill="#ffba00" rx="2"><title>${fmtDay(d.day)}: ${d.outbound_reaches} outbound reaches</title></rect>`;
-    s += `<rect x="${x + 1}" y="${y(inb)}" width="${bar}" height="${H - P - y(inb)}" fill="#00843d" rx="2"><title>${fmtDay(d.day)}: ${inb} inbound calls + texts</title></rect>`;
+    const o = Number(d.outbound_total);
+    const inb = Number(d.inbound_total);
+    s += `<rect x="${x - bar - 1}" y="${y(o)}" width="${bar}" height="${H - P - y(o)}" fill="#ffba00" rx="2"><title>${fmtDay(d.day)}: ${o} outbound (${d.outbound_calls} calls, ${d.outbound_texts} texts)</title></rect>`;
+    s += `<rect x="${x + 1}" y="${y(inb)}" width="${bar}" height="${H - P - y(inb)}" fill="#00843d" rx="2"><title>${fmtDay(d.day)}: ${inb} inbound</title></rect>`;
     if (i % every === 0) s += `<text x="${x}" y="${H - 8}" fill="#c0c0c0" font-size="10" text-anchor="middle">${fmtDay(d.day)}</text>`;
   });
-  return `${s}</svg><div class="legend"><span><i style="background:#ffba00"></i>Outbound reaches</span><span><i style="background:#00843d"></i>Inbound calls + texts</span></div>`;
+  return `${s}</svg><div class="legend"><span><i style="background:#ffba00"></i>Outbound calls + texts</span><span><i style="background:#00843d"></i>Inbound calls + texts + voicemails</span></div>`;
 }
 
 // Simple line icons for KPI tiles (stroke = currentColor)
 const svg = (d) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
 const ICON = {
-  reach: svg('<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M17 8h5M19.5 5.5 22 8l-2.5 2.5"/>'),
+  out: svg('<path d="M4 20 20 4M9 4h11v11"/>'),
+  in: svg('<path d="M20 4 4 20M15 20H4V9"/>'),
   callOut: svg('<path d="M5 4h3l2 5-2.5 1.5a11 11 0 0 0 6 6L15 14l5 2v3a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2"/><path d="M15 3h6v6M21 3l-6 6"/>'),
   callIn: svg('<path d="M5 4h3l2 5-2.5 1.5a11 11 0 0 0 6 6L15 14l5 2v3a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2"/><path d="M21 3l-6 6M15 3v6h6"/>'),
   textOut: svg('<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/><path d="M9 12h6M13 10l2 2-2 2"/>'),
   textIn: svg('<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/><path d="M15 12H9M11 10l-2 2 2 2"/>'),
   clock: svg('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
-  star: svg('<path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/>'),
   check: svg('<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>'),
 };
 /** tone: 'y' outbound/primary, 'g' inbound/good, 'r' missed/alerts */
@@ -336,11 +343,12 @@ async function renderOverview(view) {
   const t = totals(rows);
   const period = state.from === state.to ? fmtDay(state.from) : `${fmtDay(state.from)} – ${fmtDay(state.to)}`;
   view.innerHTML = `
-    <div class="section-title"><h2>Activity · ${esc(period)}</h2><button class="btn dark" id="csv">Download report (CSV)</button></div>
+    <div class="section-title"><h2>${isMgr() ? 'Activity' : 'My activity'} · ${esc(period)}</h2><button class="btn dark" id="csv">Download report (CSV)</button></div>
     <div class="kpis">
-      ${kpi('Outbound reaches', n(t.outbound_reaches), 'unique contacts, once per day', { hero: true, icon: ICON.reach })}
+      ${kpi('Outbound', n(t.outbound_total), `every call + text · ${n(t.contacts_reached)} contact${t.contacts_reached === 1 ? '' : 's'}`, { hero: true, icon: ICON.out })}
       ${kpi('Calls out', n(t.outbound_calls), t.outbound_calls ? `${pct(t.connected_calls, t.outbound_calls)} connected` : 'no calls yet', { icon: ICON.callOut })}
       ${kpi('Texts out', n(t.outbound_texts), 'sent', { icon: ICON.textOut })}
+      ${kpi('Inbound', n(t.inbound_total), 'every call + text + voicemail', { tone: 'g', icon: ICON.in })}
       ${kpi('Calls in', n(t.inbound_calls), `${n(t.missed_calls)} missed`, { tone: t.missed_calls ? 'r' : 'g', icon: ICON.callIn })}
       ${kpi('Texts in', n(t.inbound_texts), `${n(t.voicemails)} voicemails`, { tone: 'g', icon: ICON.textIn })}
       ${kpi('Reply rate', t.response_rate == null ? '—' : `${t.response_rate.toFixed(0)}%`, `avg reply ${mins(t.avg_reply_min)}`, { tone: t.avg_reply_min > 60 ? 'r' : 'g', icon: ICON.clock })}
@@ -350,19 +358,17 @@ async function renderOverview(view) {
       <div class="card"><h3>Analysis</h3><ul class="insights">${insights(t, rows, daily).map(([c, s]) => `<li class="${c}">${esc(s)}</li>`).join('')}</ul></div>
     </div>
     <div class="card">
-      <h3>Agents</h3>
+      <h3>${isMgr() ? 'Agents' : 'My extension'}</h3>
       <div class="table-wrap"><table>
-        <thead><tr><th>Agent</th><th>Account</th><th class="num">Reaches</th><th class="num">Calls out</th><th class="num">Connected</th><th class="num">Texts out</th><th class="num">Calls in</th><th class="num">Missed</th><th class="num">Texts in</th><th class="num">Reply rate</th><th class="num">Avg reply</th>${isMgr() ? '<th class="num">AI score</th>' : ''}<th>Extension</th></tr></thead>
+        <thead><tr><th>Agent</th><th class="num">Outbound</th><th class="num">Contacts</th><th class="num">Calls out</th><th class="num">Connected</th><th class="num">Texts out</th><th class="num">Inbound</th><th class="num">Calls in</th><th class="num">Missed</th><th class="num">Texts in</th><th class="num">Reply rate</th><th class="num">Avg reply</th><th>Extension</th></tr></thead>
         <tbody>${rows.map((r) => `
           <tr class="${isMgr() ? 'click' : ''}" data-agent="${r.agent_id}">
             <td>${esc(r.agent_name)}<div class="small muted">${esc(r.gv_number || '')}</div></td>
-            <td>${r.account_type === 'workspace' ? 'Workspace' : 'Personal'}</td>
-            <td class="num"><b>${n(r.outbound_reaches)}</b></td><td class="num">${n(r.outbound_calls)}</td>
-            <td class="num">${pct(r.connected_calls, r.outbound_calls)}</td><td class="num">${n(r.outbound_texts)}</td>
-            <td class="num">${n(r.inbound_calls)}</td><td class="num">${n(r.missed_calls)}</td><td class="num">${n(r.inbound_texts)}</td>
+            <td class="num"><b>${n(r.outbound_total)}</b></td><td class="num">${n(r.contacts_reached)}</td>
+            <td class="num">${n(r.outbound_calls)}</td><td class="num">${pct(r.connected_calls, r.outbound_calls)}</td><td class="num">${n(r.outbound_texts)}</td>
+            <td class="num"><b>${n(r.inbound_total)}</b></td><td class="num">${n(r.inbound_calls)}</td><td class="num">${n(r.missed_calls)}</td><td class="num">${n(r.inbound_texts)}</td>
             <td class="num">${r.response_rate == null ? '—' : `${r.response_rate}%`}</td><td class="num">${mins(r.avg_reply_min)}</td>
-            ${isMgr() ? `<td class="num">${r.avg_score ?? '—'}</td>` : ''}
-            <td>${connBadge({ last_heartbeat_at: r.last_heartbeat_at, last_health: health[r.agent_id] })}<div class="small muted">since ${r.tracking_start ? fmtDay(dayKeyIso(r.tracking_start)) : '—'}</div></td>
+            <td>${connBadge({ last_heartbeat_at: r.last_heartbeat_at, last_health: health[r.agent_id] })}<div class="small muted">since ${r.tracking_start ? fmtTime(r.tracking_start) : '—'}</div></td>
           </tr>`).join('') || '<tr><td colspan="13" class="empty">No agents yet</td></tr>'}</tbody>
       </table></div>
     </div>`;
@@ -371,22 +377,48 @@ async function renderOverview(view) {
     $('#agentFilter').value = state.agent;
     route();
   }));
-  $('#csv').addEventListener('click', () => downloadCsv(rows));
+  $('#csv').addEventListener('click', () => downloadCsv(rows, `coco-report-${state.from}-to-${state.to}.csv`,
+    ['agent_name', 'gv_number', 'outbound_total', 'contacts_reached', 'outbound_calls', 'connected_calls', 'outbound_texts',
+      'inbound_total', 'inbound_calls', 'missed_calls', 'inbound_texts', 'voicemails', 'response_rate', 'avg_reply_min']));
 }
 const dayKeyIso = (iso) => dayKey(Date.parse(iso));
 
-function downloadCsv(rows) {
-  const cols = ['agent_name', 'account_type', 'gv_number', 'outbound_reaches', 'outbound_calls', 'connected_calls', 'outbound_texts', 'inbound_calls', 'missed_calls', 'inbound_texts', 'voicemails', 'inbound_contacts', 'response_rate', 'avg_reply_min', ...(isMgr() ? ['avg_score'] : [])];
+function downloadCsv(rows, filename, cols) {
   const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
   const csv = [cols.join(','), ...rows.map((r) => cols.map((c) => q(r[c])).join(','))].join('\n');
-  const a = Object.assign(document.createElement('a'), {
-    href: URL.createObjectURL(new Blob([csv], { type: 'text/csv' })),
-    download: `coco-report-${state.from}-to-${state.to}.csv`,
-  });
-  a.click();
+  Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([csv], { type: 'text/csv' })), download: filename }).click();
 }
 
-// ---------- conversations (managers only) ----------
+// ---------- contacts (admin): every call and text, under each contact ----------
+async function renderContacts(view) {
+  view.innerHTML = `
+    <div class="section-title"><h2>Contacts</h2>
+      <div class="row" style="align-items:center"><input id="csearch" placeholder="Search number or name" style="max-width:260px"><button class="btn dark" id="ccsv">Download (CSV)</button></div></div>
+    <div class="card"><div class="table-wrap" id="ctable"><div class="empty">Loading…</div></div></div>`;
+  let rows = [];
+  const load = async () => {
+    rows = await rpc('contact_activity', { p_from: state.from, p_to: state.to, p_agent: state.agent || null, p_search: $('#csearch').value.trim() || null });
+    $('#ctable').innerHTML = `<table>
+      <thead><tr><th>Contact</th><th>Agent</th><th class="num">Calls out</th><th class="num">Connected</th><th class="num">Texts out</th><th class="num">Calls in</th><th class="num">Missed</th><th class="num">Texts in</th><th class="num">Voicemails</th><th class="num">Total</th><th>Last activity</th></tr></thead>
+      <tbody>${rows.map((c) => `<tr class="click" data-conv="${c.conversation_id || ''}">
+        <td><b>${esc(c.contact_name || c.contact)}</b>${c.contact_name ? `<div class="small muted">${esc(c.contact)}</div>` : ''}</td>
+        <td>${esc(c.agent_name)}</td>
+        <td class="num">${n(c.calls_out)}</td><td class="num">${n(c.connected)}</td><td class="num">${n(c.texts_out)}</td>
+        <td class="num">${n(c.calls_in)}</td><td class="num">${c.missed ? `<span style="color:var(--red)">${n(c.missed)}</span>` : 0}</td>
+        <td class="num">${n(c.texts_in)}</td><td class="num">${n(c.voicemails)}</td><td class="num"><b>${n(c.total)}</b></td>
+        <td>${fmtTime(c.last_at)}</td></tr>`).join('') || '<tr><td colspan="11" class="empty">No contacts in this period</td></tr>'}</tbody></table>`;
+    $('#ctable').querySelectorAll('tr[data-conv]').forEach((tr) => tr.addEventListener('click', () => {
+      if (tr.dataset.conv) location.hash = `#/conversations/${tr.dataset.conv}`;
+    }));
+  };
+  let timer;
+  $('#csearch').addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(load, 300); });
+  $('#ccsv').addEventListener('click', () => downloadCsv(rows, `coco-contacts-${state.from}-to-${state.to}.csv`,
+    ['contact', 'contact_name', 'agent_name', 'calls_out', 'connected', 'texts_out', 'calls_in', 'missed', 'texts_in', 'voicemails', 'total', 'first_at', 'last_at']));
+  await load();
+}
+
+// ---------- conversations (admin only) ----------
 async function renderConversations(view, selected) {
   view.innerHTML = `
     <div class="section-title"><h2>Conversations</h2><input id="search" placeholder="Search number, name or text" style="max-width:300px"></div>
@@ -395,7 +427,7 @@ async function renderConversations(view, selected) {
     const list = await rpc('conversation_list', { p_from: state.from, p_to: state.to, p_agent: state.agent || null, p_search: $('#search').value.trim() || null });
     $('#clist').innerHTML = list.map((c) => `
       <div class="item ${c.id === selected ? 'on' : ''}" data-id="${c.id}">
-        <div style="display:flex;justify-content:space-between"><b>${esc(c.contact_name || c.contact || 'Group / unknown')}</b>${c.score ? `<span class="badge">${c.score}/10</span>` : ''}</div>
+        <b>${esc(c.contact_name || c.contact || 'Group / unknown')}</b>
         <div class="small">${esc(c.agent_name)} · ${fmtTime(c.last_activity_at)} · ${c.messages} msg · ${c.calls} calls</div>
         <div class="snip muted">${esc(c.last_text || '')}</div>
       </div>`).join('') || '<div class="empty">No conversations in this period</div>';
@@ -408,120 +440,25 @@ async function renderConversations(view, selected) {
 }
 
 async function renderDetail(id) {
-  const [{ data: msgs }, { data: calls }, { data: an }] = await Promise.all([
+  const [{ data: msgs }, { data: calls }] = await Promise.all([
     sb.from('messages').select('id, direction, kind, body, occurred_at').eq('conversation_id', id).order('occurred_at'),
     sb.from('calls').select('id, direction, outcome, duration_sec, occurred_at').eq('conversation_id', id).order('occurred_at'),
-    sb.from('conversation_analysis').select('*').eq('conversation_id', id).order('created_at', { ascending: false }).limit(1),
   ]);
-  const a = an?.[0];
-  const flagged = new Map((a?.mistakes || []).filter((m) => m.message_id).map((m) => [m.message_id, m]));
   const items = [
     ...(msgs || []).map((m) => ({ ...m, t: 'm' })),
     ...(calls || []).map((c) => ({ ...c, t: 'c' })),
   ].sort((x, y) => Date.parse(x.occurred_at) - Date.parse(y.occurred_at));
-  const callLabel = (c) => `${c.direction === 'outbound' ? '↗ Outgoing' : '↙ Incoming'} call · ${c.outcome}${c.duration_sec ? ` · ${Math.round(c.duration_sec / 60)} min ${c.duration_sec % 60}s` : ''}`;
-
+  const callLabel = (c) => `${c.direction === 'outbound' ? '↗ Outgoing' : '↙ Incoming'} call · ${c.outcome}${c.duration_sec ? ` · ${Math.floor(c.duration_sec / 60)} min ${c.duration_sec % 60}s` : ''}`;
+  const outN = items.filter((i) => i.direction === 'outbound').length;
   $('#detail').innerHTML = `
-    <div class="two">
-      <div>
-        <h3>Timeline</h3>
-        <div class="timeline">${items.map((it) => it.t === 'c'
-          ? `<div class="event">${esc(callLabel(it))} · ${fmtTime(it.occurred_at)}</div>`
-          : `<div class="bubble ${it.direction === 'outbound' ? 'out' : ''} ${flagged.has(it.id) ? 'flag' : ''}" title="${esc(flagged.get(it.id)?.issue || '')}">
-               ${it.kind === 'voicemail' ? '<b>Voicemail:</b> ' : ''}${esc(it.body || '(no text)')}
-               <div class="meta">${fmtTime(it.occurred_at)}</div></div>`).join('') || '<div class="empty">Empty</div>'}
-        </div>
-      </div>
-      <div>
-        <h3>Claude review</h3>
-        ${a ? `
-          <div style="display:flex;gap:14px;align-items:center;margin:8px 0"><div class="score">${a.overall_score ?? '—'}</div>
-            <div><span class="badge">${esc(a.outcome || '—')}</span> <span class="badge">${esc(a.sentiment || '—')}</span><div class="small muted">${fmtTime(a.created_at)} · ${esc(a.model)}</div></div></div>
-          <p style="color:var(--text)">${esc(a.summary || '')}</p>
-          ${(a.mistakes || []).map((m) => `<div class="mistake"><span class="badge ${esc(m.severity)}">${esc(m.severity)}</span> <b style="color:var(--text)">${esc(m.issue)}</b><div class="small">→ ${esc(m.suggestion)}</div></div>`).join('')}
-          ${(a.improvements || []).length ? `<h3 style="margin-top:14px;font-size:14px">Improve</h3><ul>${a.improvements.map((s) => `<li>${esc(s)}</li>`).join('')}</ul>` : ''}`
-        : '<p class="muted">Not analyzed yet.</p>'}
-        <button class="btn" id="analyzeOne" style="margin-top:12px">Analyze this conversation</button>
-      </div>
+    <div class="section-title"><h3>Timeline</h3><span class="small">${items.length} items · ${outN} outbound · ${items.length - outN} inbound</span></div>
+    <div class="timeline">${items.map((it) => it.t === 'c'
+      ? `<div class="event">${esc(callLabel(it))} · ${fmtTime(it.occurred_at)}</div>`
+      : `<div class="bubble ${it.direction === 'outbound' ? 'out' : ''}">
+           ${it.kind === 'voicemail' ? '<b>Voicemail:</b> ' : ''}${esc(it.body || '(no text)')}
+           <div class="meta">${fmtTime(it.occurred_at)}</div></div>`).join('') || '<div class="empty">Empty</div>'}
     </div>`;
-  $('#analyzeOne').addEventListener('click', async () => {
-    const { error } = await sb.from('analysis_requests').insert({ conversation_id: id });
-    toast(error ? error.message : 'Queued — Claude will review it on the next worker run.');
-  });
 }
-
-// ---------- reports ----------
-async function renderReports(view) {
-  const t0 = new Date(`${state.from}T00:00:00Z`).getTime() - 864e5; // padded; tz-exact filtering below
-  const agentId = isMgr() ? state.agent || null : state.agentId;
-  let cq = sb.from('agent_coaching_reports').select('*, agents(name)').order('period_end', { ascending: false }).limit(20);
-  if (agentId) cq = cq.eq('agent_id', agentId);
-  const [{ data: coaching }, analyses, { data: lastReq }] = await Promise.all([
-    cq,
-    isMgr() ? (async () => {
-      let q = sb.from('conversation_analysis').select('conversation_id, agent_id, overall_score, outcome, mistakes, created_at, agents(name)')
-        .gte('created_at', new Date(t0).toISOString()).order('created_at', { ascending: false }).limit(1000);
-      if (agentId) q = q.eq('agent_id', agentId);
-      const { data } = await q;
-      return (data || []).filter((r) => { const d = dayKeyIso(r.created_at); return d >= state.from && d <= state.to; });
-    })() : [],
-    isMgr() ? sb.from('analysis_requests').select('status, created_at').order('created_at', { ascending: false }).limit(1) : { data: [] },
-  ]);
-
-  const s = state.settings;
-  const sched = s.analysis_mode === 'manual' ? 'Manual only'
-    : s.analysis_mode === 'hourly' ? 'Every hour'
-      : s.analysis_mode === 'daily' ? `Daily at ${s.analysis_time.slice(0, 5)}`
-        : `Weekly, ${DAYS[s.analysis_weekday]} at ${s.analysis_time.slice(0, 5)}`;
-
-  const latest = new Map();
-  analyses.forEach((a) => { if (!latest.has(a.conversation_id)) latest.set(a.conversation_id, a); });
-  const list = [...latest.values()];
-  const avg = list.length ? (list.reduce((x, a) => x + (a.overall_score || 0), 0) / list.length).toFixed(1) : '—';
-  const outcomes = {};
-  const rules = {};
-  list.forEach((a) => {
-    outcomes[a.outcome || 'unknown'] = (outcomes[a.outcome || 'unknown'] || 0) + 1;
-    (a.mistakes || []).forEach((m) => { const k = m.rule || m.issue; rules[k] = (rules[k] || 0) + 1; });
-  });
-  const topRules = Object.entries(rules).sort((a, b) => b[1] - a[1]).slice(0, 6);
-  const low = list.filter((a) => a.overall_score != null).sort((a, b) => a.overall_score - b.overall_score).slice(0, 6);
-
-  view.innerHTML = `
-    ${isMgr() ? `
-    <div class="section-title"><h2>Claude analysis</h2>
-      <div><span class="small">Schedule: <b style="color:var(--text)">${esc(sched)}</b> (${TZ_NAMES[tz()]}) · last run ${ago(s.last_analysis_run_at)}${lastReq?.[0]?.status === 'pending' ? ' · request pending' : ''}</span>
-      <button class="btn" id="runNow">Run analysis now</button></div></div>
-    <div class="kpis">
-      ${kpi('Conversations reviewed', n(list.length), 'by Claude', { hero: true, icon: ICON.check })}
-      ${kpi('Average score', avg, 'out of 10', { tone: avg !== '—' && Number(avg) < 6 ? 'r' : 'g', icon: ICON.star })}
-      ${Object.entries(outcomes).slice(0, 4).map(([k, v]) => kpi(esc(k.replace('_', ' ')), n(v), pct(v, list.length), { tone: /not_interested|opted_out|no_reply/.test(k) ? 'r' : /booked|interested/.test(k) ? 'g' : 'y' })).join('')}
-    </div>
-    <div class="two">
-      <div class="card"><h3>Most common mistakes</h3>
-        ${topRules.length ? `<table><tbody>${topRules.map(([k, v]) => `<tr><td style="white-space:normal">${esc(k)}</td><td class="num">${v}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">No mistakes recorded in this period</div>'}
-      </div>
-      <div class="card"><h3>Needs attention</h3>
-        ${low.length ? `<table><tbody>${low.map((a) => `<tr class="click" data-c="${a.conversation_id}"><td>${esc(a.agents?.name)}</td><td>${esc(a.outcome || '')}</td><td class="num"><b>${a.overall_score}/10</b></td></tr>`).join('')}</tbody></table>` : '<div class="empty">Nothing yet</div>'}
-      </div>
-    </div>` : '<div class="section-title"><h2>My coaching</h2></div>'}
-    <div class="card"><h3>Coaching reports</h3>
-      ${(coaching || []).map((c) => {
-        const r = c.report || {};
-        return `<div class="mistake"><b style="color:var(--text)">${esc(c.agents?.name || '')}</b> <span class="small">${fmtDay(c.period_start)} – ${fmtDay(c.period_end)}</span>
-          ${r.summary ? `<p style="color:var(--text)">${esc(r.summary)}</p>` : ''}
-          <div class="two"><div>${listBlock('Strengths', r.strengths)}${listBlock('Top mistakes', r.top_mistakes)}</div><div>${listBlock('Action items', r.action_items)}</div></div></div>`;
-      }).join('') || '<div class="empty">No coaching reports yet</div>'}
-    </div>`;
-
-  view.querySelectorAll('tr[data-c]').forEach((tr) => tr.addEventListener('click', () => { location.hash = `#/conversations/${tr.dataset.c}`; }));
-  $('#runNow')?.addEventListener('click', async () => {
-    const { error } = await sb.from('analysis_requests').insert({ agent_id: state.agent || null });
-    toast(error ? error.message : 'Analysis requested — results appear here when the worker finishes.');
-  });
-}
-const listBlock = (title, arr) => (Array.isArray(arr) && arr.length
-  ? `<div class="small" style="margin-top:8px;text-transform:uppercase;letter-spacing:.05em">${title}</div><ul>${arr.map((x) => `<li>${esc(typeof x === 'string' ? x : x.text || x.issue || JSON.stringify(x))}</li>`).join('')}</ul>` : '');
 
 // ---------- account (everyone) ----------
 async function renderAccount(view) {
@@ -562,7 +499,7 @@ async function team(body) {
   return data;
 }
 
-const ROLE_LABEL = { admin: 'Admin', manager: 'Manager', agent: 'Agent' };
+const ROLE_LABEL = { admin: 'Admin', agent: 'Agent' };
 const copyBtn = (id, value) => {
   const b = document.getElementById(id);
   b?.addEventListener('click', async () => {
@@ -571,34 +508,29 @@ const copyBtn = (id, value) => {
 };
 
 async function renderSettings(view) {
-  const isAdmin = state.role === 'admin';
   const [{ data: agents }, users] = await Promise.all([
-    sb.from('agents').select('id, name, email, gv_number, account_type, active, tracking_start, last_heartbeat_at, last_health, parser_version, token_hint').order('name'),
+    sb.from('agents').select('id, name, email, gv_number, active, tracking_start, last_heartbeat_at, last_health, parser_version, token_hint').order('name'),
     rpc('list_users', {}),
   ]);
   const s = state.settings;
   const opt = (v, cur, label = v) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
   const agentName = (id) => (agents || []).find((a) => a.id === id)?.name || '';
-  const canTouch = (u) => u.user_id !== state.user.id && (isAdmin || u.role === 'agent');
+  const isMe = (u) => u.user_id === state.user.id;
 
   view.innerHTML = `
-    <div class="section-title"><h2>${isAdmin ? 'Settings' : 'Team'}</h2></div>
+    <div class="section-title"><h2>Settings</h2></div>
 
-    <div class="card"><h3>Team members (dashboard logins)</h3>
-      <p class="small">Create logins here — no email needed. Each new user gets a temporary password (shown once) and must choose their own password at first sign-in.
-      ${isAdmin ? 'Admins can create any role.' : 'Managers can create and manage agent logins.'} Only admins and managers can read message transcripts.</p>
+    <div class="card"><h3>Dashboard users</h3>
+      <p class="small"><b>Admin</b> sees everything (all agents, contacts, conversations). <b>Agent</b> sees only their own numbers — no other agents, no message text.
+      Create logins here — no email needed: each new user gets a temporary password (shown once) and must choose their own password at first sign-in.</p>
       <div class="table-wrap"><table>
         <thead><tr><th>User</th><th>Role</th><th>Tracking agent</th><th>Last sign-in</th><th></th></tr></thead>
         <tbody>${(users || []).map((u) => `<tr data-uid="${u.user_id}" data-email="${esc(u.email)}">
-          <td>${esc(u.name || '')}<div class="small muted">${esc(u.email)}${u.user_id === state.user.id ? ' · you' : ''}</div></td>
-          <td>${isAdmin && u.user_id !== state.user.id
-            ? `<select class="uRoleSel">${['admin', 'manager', 'agent'].map((r) => opt(r, u.role, ROLE_LABEL[r])).join('')}</select>`
-            : esc(ROLE_LABEL[u.role] || u.role)}</td>
-          <td>${isAdmin && u.user_id !== state.user.id
-            ? `<select class="uAgentSel"><option value="">—</option>${(agents || []).map((a) => opt(a.id, u.agent_id, a.name)).join('')}</select>`
-            : esc(agentName(u.agent_id) || '—')}</td>
+          <td>${esc(u.name || '')}<div class="small muted">${esc(u.email)}${isMe(u) ? ' · you' : ''}</div></td>
+          <td>${isMe(u) ? 'Admin' : `<select class="uRoleSel">${opt('agent', u.role === 'admin' ? 'admin' : 'agent', 'Agent')}${opt('admin', u.role === 'admin' ? 'admin' : 'agent', 'Admin')}</select>`}</td>
+          <td>${isMe(u) ? '—' : `<select class="uAgentSel"><option value="">—</option>${(agents || []).map((a) => opt(a.id, u.agent_id, a.name)).join('')}</select>`}</td>
           <td>${u.last_sign_in_at ? ago(u.last_sign_in_at) : '<span class="small muted">never</span>'}${u.must_change_password ? '<div class="small muted">temporary password</div>' : ''}</td>
-          <td style="white-space:nowrap">${canTouch(u) ? `${isAdmin ? '<button class="btn dark uSave">Save</button> ' : ''}<button class="btn dark uReset">Reset password</button> <button class="btn dark uRemove">Remove</button>` : ''}</td>
+          <td style="white-space:nowrap">${isMe(u) ? '' : '<button class="btn dark uSave">Save</button> <button class="btn dark uReset">Reset password</button> <button class="btn dark uRemove">Remove</button>'}</td>
         </tr>`).join('') || '<tr><td colspan="5" class="empty">No users yet</td></tr>'}</tbody>
       </table></div>
 
@@ -606,56 +538,47 @@ async function renderSettings(view) {
       <div class="row">
         <div><label>Name</label><input id="cName" placeholder="e.g. Sarah Khan"></div>
         <div><label>Email</label><input id="cEmail" type="email" placeholder="name@company.com"></div>
-        <div><label>Role</label><select id="cRole">${(isAdmin ? ['agent', 'manager', 'admin'] : ['agent']).map((r) => opt(r, 'agent', ROLE_LABEL[r])).join('')}</select></div>
+        <div><label>Role</label><select id="cRole"><option value="agent" selected>Agent (own numbers only)</option><option value="admin">Admin (everything)</option></select></div>
       </div>
       <div class="row" id="cAgentRow">
         <div><label>Tracking</label><select id="cAgentMode">
           <option value="new">Create a tracking agent + extension token</option>
           ${(agents || []).map((a) => `<option value="${a.id}">Link to existing agent: ${esc(a.name)}</option>`).join('')}
-          <option value="none">No tracking (dashboard login only)</option>
         </select></div>
-        <div><label>Google Voice account</label><select id="cType"><option value="workspace" selected>Google Workspace Voice</option><option value="personal">Personal Google Voice</option></select></div>
+        <div><label>Google Voice account</label><input value="Business (Google Workspace)" disabled></div>
       </div>
       <div class="row"><div><button class="btn" id="createUser">Create user</button></div></div>
       <div id="credOut"></div>
     </div>
 
-    <div class="card"><h3>Agents (Google Voice numbers)</h3>
-      <p class="small">One agent = one person / Voice number. The agent pastes their token into the Coco Voice extension (Settings → Connect) — no other setup. Tokens are shown once and stored only as a hash; use <b>New token</b> if one is lost or a laptop changes hands (the old token stops working immediately).</p>
-      <div class="table-wrap"><table><thead><tr><th>Name</th><th>Extension</th><th>Voice number</th><th>Account</th><th>Token</th><th>Tracking since</th><th>Active</th><th></th></tr></thead>
+    <div class="card"><h3>Agents (Google Voice business numbers)</h3>
+      <p class="small">One agent = one person / Voice number. The agent pastes their token into the Coco Voice extension (Settings → Connect) — no other setup.
+      Tracking starts the moment they connect (no old history). Tokens are shown once and stored only as a hash; use <b>New token</b> if one is lost or a laptop changes hands.</p>
+      <div class="table-wrap"><table><thead><tr><th>Name</th><th>Extension</th><th>Voice number</th><th>Token</th><th>Tracking since</th><th>Active</th><th></th></tr></thead>
       <tbody>${(agents || []).map((a) => `<tr data-id="${a.id}">
         <td><input class="aName" value="${esc(a.name)}"><div class="small muted">${esc(a.email || '')}</div></td>
         <td>${connBadge(a)}</td>
         <td>${esc(a.gv_number || 'detected on first sync')}</td>
-        <td><select class="aType">${opt('personal', a.account_type, 'Personal')}${opt('workspace', a.account_type, 'Workspace')}</select></td>
         <td class="small">${a.token_hint ? `…${esc(a.token_hint)}` : '—'}</td>
-        <td>${a.tracking_start ? fmtTime(a.tracking_start) : 'on first sync'}</td>
+        <td>${a.tracking_start ? fmtTime(a.tracking_start) : 'when connected'}</td>
         <td><input type="checkbox" class="aActive" ${a.active ? 'checked' : ''} style="width:auto"></td>
-        <td style="white-space:nowrap"><button class="btn dark aSave">Save</button> <button class="btn dark aRotate">New token</button></td></tr>`).join('') || '<tr><td colspan="8" class="empty">No agents yet — create an agent user above, or add a tracking-only agent below.</td></tr>'}</tbody></table></div>
+        <td style="white-space:nowrap"><button class="btn dark aSave">Save</button> <button class="btn dark aRotate">New token</button></td></tr>`).join('') || '<tr><td colspan="7" class="empty">No agents yet — create an Agent user above, or add a tracking-only agent below.</td></tr>'}</tbody></table></div>
       <div class="row" style="margin-top:12px">
         <div><label>Name</label><input id="nName" placeholder="tracking-only agent (no login)"></div>
         <div><label>Email</label><input id="nEmail" type="email" placeholder="optional"></div>
-        <div><label>Account</label><select id="nType"><option value="workspace" selected>Google Workspace Voice</option><option value="personal">Personal Google Voice</option></select></div>
         <div><button class="btn dark" id="addAgent">Add agent &amp; create token</button></div>
       </div>
       <div id="tokenOut"></div>
     </div>
 
-    ${isAdmin ? `
-    <div class="card"><h3>Business &amp; Claude analysis</h3>
+    <div class="card"><h3>Business</h3>
       <div class="row">
         <div><label>Business timezone</label><select id="sTz">${Object.entries(TZ_NAMES).map(([k, v]) => opt(k, s.business_timezone, `${v} (${k})`)).join('')}</select></div>
-        <div><label>Analysis runs</label><select id="sMode">${[['manual', 'Manual only'], ['hourly', 'Every hour'], ['daily', 'Daily'], ['weekly', 'Weekly']].map(([k, v]) => opt(k, s.analysis_mode, v)).join('')}</select></div>
-        <div><label>At (local time)</label><input id="sTime" type="time" value="${s.analysis_time.slice(0, 5)}"></div>
-        <div><label>Weekly report day</label><select id="sDay">${DAYS.map((d, i) => opt(String(i), String(s.analysis_weekday), d)).join('')}</select></div>
-      </div>
-      <div class="row">
-        <div><label>Conversation model</label><input id="sModel" value="${esc(s.analysis_model)}"></div>
-        <div><label>Coaching model</label><input id="sCoach" value="${esc(s.coaching_model)}"></div>
         <div><label>Keep data (days)</label><input id="sRet" type="number" min="30" value="${s.retention_days}"></div>
+        <div><label>Claude analysis</label><input value="On hold" disabled></div>
         <div><button class="btn" id="saveSettings">Save</button></div>
       </div>
-    </div>` : ''}`;
+    </div>`;
 
   // ---- credentials card (shown once) ----
   const showCreds = ({ email, name, role, password, token }) => {
@@ -681,9 +604,8 @@ async function renderSettings(view) {
     $('#credOut').scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
 
-  const syncAgentRow = () => { $('#cAgentRow').hidden = $('#cRole').value !== 'agent'; $('#cType').disabled = $('#cAgentMode').value !== 'new'; };
+  const syncAgentRow = () => { $('#cAgentRow').hidden = $('#cRole').value !== 'agent'; };
   $('#cRole').addEventListener('change', syncAgentRow);
-  $('#cAgentMode').addEventListener('change', syncAgentRow);
   syncAgentRow();
 
   $('#createUser').addEventListener('click', async (e) => {
@@ -694,12 +616,7 @@ async function renderSettings(view) {
     if (!/^\S+@\S+\.\S+$/.test(email)) return toast('Enter a valid email');
     e.target.disabled = true;
     try {
-      const r = await team({
-        action: 'create', email, name, role,
-        agent_id: role === 'agent' && !['new', 'none'].includes(mode) ? mode : null,
-        create_agent: role === 'agent' && mode === 'new',
-        account_type: $('#cType').value,
-      });
+      const r = await team({ action: 'create', email, name, role, agent_id: role === 'agent' && mode !== 'new' ? mode : null });
       await renderSettings(view);
       showCreds({ email, name, role, password: r.temp_password, token: r.agent_token });
     } catch (err) { toast(err.message); e.target.disabled = false; }
@@ -724,16 +641,12 @@ async function renderSettings(view) {
     });
   });
 
-  $('#saveSettings')?.addEventListener('click', async () => {
-    const upd = {
-      business_timezone: $('#sTz').value, analysis_mode: $('#sMode').value, analysis_time: $('#sTime').value,
-      analysis_weekday: Number($('#sDay').value), analysis_model: $('#sModel').value.trim(), coaching_model: $('#sCoach').value.trim(),
-      retention_days: Number($('#sRet').value), updated_at: new Date().toISOString(),
-    };
+  $('#saveSettings').addEventListener('click', async () => {
+    const upd = { business_timezone: $('#sTz').value, retention_days: Number($('#sRet').value), updated_at: new Date().toISOString() };
     const { data, error } = await sb.from('app_settings').update(upd).eq('id', 1).select().single();
     if (error) return toast(error.message);
     state.settings = data;
-    $('#tzLabel').textContent = `${TZ_NAMES[tz()]} time`;
+    $('#tzLabel').textContent = `${TZ_NAMES[tz()] || tz()} time`;
     toast('Settings saved');
   });
   const showToken = (name, token) => {
@@ -744,8 +657,8 @@ async function renderSettings(view) {
         <div class="token-row"><div class="token">${esc(token)}</div><button class="btn" id="tokCopy">Copy</button></div>
         <ol class="small">
           <li>Agent installs the Coco Voice extension in Chrome.</li>
-          <li>Clicks the extension → <b>Settings</b> → pastes the token → <b>Connect</b>. It shows "Connected as ${esc(name)}".</li>
-          <li>Keeps a Google Voice tab open (pinned). Status here turns green within a few minutes.</li>
+          <li>Clicks the extension → <b>Settings</b> → pastes the token → <b>Connect</b>. It shows "Connected as ${esc(name)}". Tracking starts now.</li>
+          <li>Keeps the Google Voice (business account) tab open. Status here turns green within a few minutes.</li>
         </ol>
       </div>`;
     copyBtn('tokCopy', token);
@@ -755,7 +668,7 @@ async function renderSettings(view) {
     const name = $('#nName').value.trim();
     if (!name) return toast('Name is required');
     try {
-      const r = await rpc('create_agent', { p_name: name, p_email: $('#nEmail').value.trim(), p_account_type: $('#nType').value });
+      const r = await rpc('create_agent', { p_name: name, p_email: $('#nEmail').value.trim(), p_account_type: 'workspace' });
       await renderSettings(view);
       showToken(name, r.token);
     } catch (e) { toast(e.message); }
@@ -763,7 +676,7 @@ async function renderSettings(view) {
   view.querySelectorAll('tr[data-id]').forEach((tr) => {
     const id = tr.dataset.id;
     $('.aSave', tr).addEventListener('click', async () => {
-      try { await rpc('update_agent', { p_agent: id, p_name: $('.aName', tr).value, p_account_type: $('.aType', tr).value, p_active: $('.aActive', tr).checked }); toast('Saved'); } catch (e) { toast(e.message); }
+      try { await rpc('update_agent', { p_agent: id, p_name: $('.aName', tr).value, p_account_type: 'workspace', p_active: $('.aActive', tr).checked }); toast('Saved'); } catch (e) { toast(e.message); }
     });
     $('.aRotate', tr).addEventListener('click', async () => {
       if (!confirm('Generate a new token? The old one stops working immediately.')) return;

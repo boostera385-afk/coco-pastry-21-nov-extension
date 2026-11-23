@@ -25,28 +25,36 @@ test('addDays crosses months', () => {
   assert.equal(addDays('2026-03-01', -1), '2026-02-28');
 });
 
-test('outbound reach counts a contact once per day', () => {
+test('every call and every text counts; contacts = distinct numbers (Pakistan time)', () => {
+  const PK = 'Asia/Karachi';
   const ev = [
-    { k: 'call', d: 'out', c: '+15550000001', at: at('2026-11-23T14:00:00Z'), o: null, s: 0 },
-    { k: 'text', d: 'out', c: '+15550000001', at: at('2026-11-23T15:00:00Z') },
-    { k: 'text', d: 'out', c: '+15550000001', at: at('2026-11-23T16:00:00Z') },
-    { k: 'text', d: 'out', c: '+15550000002', at: at('2026-11-23T16:00:00Z') },
-    { k: 'call', d: 'out', c: '+15550000001', at: at('2026-11-24T15:00:00Z'), o: 'answered', s: 90 },
-    { k: 'call', d: 'in', c: '+15550000003', at: at('2026-11-23T17:00:00Z'), o: 'missed', s: 0 },
-    { k: 'text', d: 'in', c: '+15550000002', at: at('2026-11-23T17:00:00Z') },
-    { k: 'voicemail', d: 'in', c: '+15550000003', at: at('2026-11-23T17:01:00Z'), o: 'voicemail' },
+    { k: 'call', d: 'out', c: '+15550000001', at: at('2026-11-23T05:00:00Z'), o: null, s: 0 },
+    { k: 'text', d: 'out', c: '+15550000001', at: at('2026-11-23T06:00:00Z') },
+    { k: 'text', d: 'out', c: '+15550000001', at: at('2026-11-23T07:00:00Z') },
+    { k: 'text', d: 'out', c: '+15550000002', at: at('2026-11-23T07:00:00Z') },
+    { k: 'call', d: 'out', c: '+15550000001', at: at('2026-11-23T20:00:00Z'), o: 'answered', s: 90 }, // 01:00 PKT next day
+    { k: 'call', d: 'in', c: '+15550000003', at: at('2026-11-23T08:00:00Z'), o: 'missed', s: 0 },
+    { k: 'text', d: 'in', c: '+15550000002', at: at('2026-11-23T08:00:00Z') },
+    { k: 'voicemail', d: 'in', c: '+15550000003', at: at('2026-11-23T08:01:00Z'), o: 'voicemail' },
   ];
-  const day = summarize(ev, '2026-11-23', '2026-11-23', TZ);
-  assert.equal(day.outboundReaches, 2);
+  const day = summarize(ev, '2026-11-23', '2026-11-23', PK);
+  assert.equal(day.outboundTotal, 4);   // 1 call + 3 texts, each counted
+  assert.equal(day.contactsReached, 2);
   assert.equal(day.outboundTexts, 3);
   assert.equal(day.outboundCalls, 1);
   assert.equal(day.connectedCalls, 0);
+  assert.equal(day.inboundTotal, 3);    // missed call + text + voicemail
   assert.equal(day.missedCalls, 1);
   assert.equal(day.inboundTexts, 1);
   assert.equal(day.voicemails, 1);
-  const two = summarize(ev, '2026-11-23', '2026-11-24', TZ);
-  assert.equal(two.outboundReaches, 3); // contact 1 counted on both days
+  const two = summarize(ev, '2026-11-23', '2026-11-24', PK);
+  assert.equal(two.outboundTotal, 5);   // 20:00 UTC call falls on Nov 24 in Pakistan
+  assert.equal(two.contactsReached, 2);
   assert.equal(two.connectedCalls, 1);
+});
+
+test('dayKey uses Pakistan time by default', () => {
+  assert.equal(dayKey(at('2026-11-23T19:30:00Z')), '2026-11-24'); // 00:30 PKT
 });
 
 test('parser: thread list with known type codes', () => {

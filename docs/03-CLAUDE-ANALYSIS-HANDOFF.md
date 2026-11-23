@@ -1,5 +1,7 @@
 # Claude Analysis — Handoff for Ibraheem
 
+> **ON HOLD (department instruction, 2026-11-23).** Do not build or run the worker until the department re-enables it. The tables (`conversation_analysis`, `agent_coaching_reports`, `analysis_requests`) stay in place; the dashboard UI for analysis has been removed for now. Business timezone is now **Asia/Karachi**, and only admins can read transcripts.
+
 The extension + backend deliver clean data into Supabase. This doc is the contract for the analysis worker.
 Schema: `supabase/migrations/20261123000000_init.sql`.
 

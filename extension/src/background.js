@@ -1,7 +1,7 @@
-// Service worker: parse -> filter (install day onward) -> dedupe -> queue -> sync to Supabase.
+// Service worker: parse -> filter (from the moment the agent connected; no old history) -> dedupe -> queue -> sync.
 // Also owns the shared status (badge, side panel, in-page widget) and pause/resume.
 import { parseResponse, parseSendRequest, PARSER_VERSION } from './parser/gv-protojson.js';
-import { DEFAULT_TZ, startOfDay, summarize, dayKey } from './lib/metrics.js';
+import { DEFAULT_TZ, summarize, dayKey } from './lib/metrics.js';
 import { INGEST_URL, TOKEN_RE } from './config.js';
 
 const KEEP_DAYS = 35;          // local history for the panel
@@ -25,13 +25,12 @@ function setup() {
 }
 
 chrome.runtime.onInstalled.addListener(async ({ reason }) => {
-  const { trackingStart, timezone } = await get(['trackingStart', 'timezone']);
-  if (reason === 'install' || !trackingStart) {
-    // tracking starts at 00:00 of install day (business TZ)
+  if (reason === 'install') {
+    // Nothing is tracked until the agent connects their token (that moment = tracking start).
     await set({
-      trackingStart: startOfDay(Date.now(), timezone || DEFAULT_TZ),
+      trackingStart: null,
       installedAt: Date.now(),
-      timezone: timezone || DEFAULT_TZ,
+      timezone: DEFAULT_TZ,
       paused: false,
       showWidget: true,
       events: {}, queue: [], health: { captures: 0, parsed: 0, unknown: 0, sendChecks: [] },
@@ -89,6 +88,11 @@ async function connect(raw) {
   const token = String(raw || '').trim();
   if (!TOKEN_RE.test(token)) return { ok: false, error: 'That doesn\'t look like a Coco token (it starts with coco_).' };
   const prev = await get(['agentToken']);
+  if (token !== prev.agentToken) {
+    // New connection = start working now. Drop anything seen before (no old history).
+    // If this agent already started on another computer, the server sends back its original start time.
+    await serial(() => set({ trackingStart: Date.now(), events: {}, queue: [], health: { captures: 0, parsed: 0, unknown: 0, sendChecks: [] } }));
+  }
   await set({ agentToken: token, agentName: null, backoffUntil: 0, failures: 0, heartbeatPending: true, lastSyncError: null });
   const r = await sync();
   if (!r.ok) {
@@ -113,8 +117,9 @@ async function openVoice() {
 
 // ---------- capture ----------
 async function onCapture({ url, body, reqBody }) {
-  const st = await get(['agentNumber', 'trackingStart', 'events', 'queue', 'health', 'debugRecord', 'samples', 'paused']);
+  const st = await get(['agentNumber', 'trackingStart', 'events', 'queue', 'health', 'debugRecord', 'samples', 'paused', 'agentToken']);
   if (st.paused) return; // paused by the agent: capture nothing (reported to the dashboard)
+  if (!st.agentToken || !st.trackingStart) return; // not connected yet: tracking hasn't started
   const health = st.health || { captures: 0, parsed: 0, unknown: 0, sendChecks: [] };
   health.captures++;
   health.lastCaptureAt = Date.now();
@@ -144,7 +149,7 @@ async function onCapture({ url, body, reqBody }) {
 
   for (const e of events) {
     const at = Date.parse(e.occurred_at);
-    if (!Number.isFinite(at) || at < since) continue;        // only from install day onward
+    if (!Number.isFinite(at) || at < since) continue;        // only from the moment tracking started
     const sig = `${e.type}|${e.direction}|${e.call_outcome}|${e.duration_sec}|${(e.body || '').length}`;
     const prev = local[e.gv_id];
     if (prev && prev.sig === sig) continue;                  // already have this exact version
@@ -188,8 +193,8 @@ async function refreshStatus() {
   const colors = { ok: '#00843d', warn: '#ffba00', bad: '#cc3433', paused: '#777777' };
   await chrome.action.setBadgeBackgroundColor({ color: colors[level] });
   await chrome.action.setBadgeTextColor?.({ color: level === 'warn' ? '#000000' : '#ffffff' });
-  await chrome.action.setBadgeText({ text: level === 'paused' ? 'II' : level === 'bad' ? '!' : String(summary.outboundReaches || '') });
-  await chrome.action.setTitle({ title: `Coco Voice — ${text} · ${summary.outboundReaches} reaches today` });
+  await chrome.action.setBadgeText({ text: level === 'paused' ? 'II' : level === 'bad' ? '!' : String(summary.outboundTotal || '') });
+  await chrome.action.setTitle({ title: `Coco Voice — ${text} · ${summary.outboundTotal} outbound today` });
 }
 
 chrome.storage.onChanged.addListener((c, area) => {
@@ -235,7 +240,7 @@ async function sync() {
       if (out.agent?.name) await set({ agentName: out.agent.name });
       if (out.config) {
         const upd = { timezone: out.config.timezone };
-        if (out.config.tracking_start) upd.trackingStart = Math.max(Date.parse(out.config.tracking_start), 0);
+        if (out.config.tracking_start) upd.trackingStart = Date.parse(out.config.tracking_start);
         await set(upd);
       }
       const n = batch.length;
