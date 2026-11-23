@@ -279,13 +279,14 @@ const isSilent = (r) => !r.last_heartbeat_at || Date.now() - Date.parse(r.last_h
 function barChart(daily) {
   if (!daily.length) return '<div class="empty">No data</div>';
   const W = 720, H = 220, P = 26;
-  const max = Math.max(1, ...daily.map((d) => Math.max(d.outbound_reaches, Number(d.inbound_calls) + Number(d.inbound_texts))));
+  const peak = Math.max(0, ...daily.map((d) => Math.max(Number(d.outbound_reaches), Number(d.inbound_calls) + Number(d.inbound_texts))));
+  const max = Math.max(4, Math.ceil(peak / 2) * 2); // even number >= 4 so axis ticks are distinct integers
   const bw = (W - P) / daily.length;
   const bar = Math.max(2, Math.min(18, bw / 2 - 3));
   const y = (v) => H - P - ((H - P - 8) * v) / max;
   const every = Math.ceil(daily.length / 10);
   let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Daily outbound reaches and inbound activity">`;
-  [0, 0.5, 1].forEach((f) => { const v = Math.round(max * f); s += `<line x1="${P}" x2="${W}" y1="${y(v)}" y2="${y(v)}" stroke="#262626"/><text x="${P - 6}" y="${y(v) + 4}" fill="#c0c0c0" font-size="10" text-anchor="end">${v}</text>`; });
+  [0, max / 2, max].forEach((v) => { s += `<line x1="${P}" x2="${W}" y1="${y(v)}" y2="${y(v)}" stroke="#262626"/><text x="${P - 6}" y="${y(v) + 4}" fill="#c0c0c0" font-size="10" text-anchor="end">${v}</text>`; });
   daily.forEach((d, i) => {
     const x = P + i * bw + bw / 2;
     const inb = Number(d.inbound_calls) + Number(d.inbound_texts);
@@ -310,7 +311,7 @@ async function renderOverview(view) {
     <div class="section-title"><h2>Activity · ${esc(period)}</h2><button class="btn dark" id="csv">Download report (CSV)</button></div>
     <div class="kpis">
       ${kpi('Outbound reaches', n(t.outbound_reaches), 'unique contacts, once per day', true)}
-      ${kpi('Calls out', n(t.outbound_calls), `${pct(t.connected_calls, t.outbound_calls)} connected`)}
+      ${kpi('Calls out', n(t.outbound_calls), t.outbound_calls ? `${pct(t.connected_calls, t.outbound_calls)} connected` : 'no calls yet')}
       ${kpi('Texts out', n(t.outbound_texts))}
       ${kpi('Calls in', n(t.inbound_calls), `${n(t.missed_calls)} missed`)}
       ${kpi('Texts in', n(t.inbound_texts), `${n(t.voicemails)} voicemails`)}

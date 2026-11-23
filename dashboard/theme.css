@@ -18,6 +18,7 @@
   --body: 'DM Sans', system-ui, sans-serif;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }   /* the hidden attribute must win over component display rules */
 body { margin: 0; background: var(--bg); color: var(--muted); font: 14px/1.5 var(--body); }
 h1, h2, h3 { font-family: var(--head); text-transform: uppercase; color: var(--text); font-weight: 600; letter-spacing: .02em; margin: 0; }
 a { color: var(--accent); text-decoration: none; }
