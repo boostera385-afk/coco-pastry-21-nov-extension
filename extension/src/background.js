@@ -6,7 +6,7 @@ import { INGEST_URL, TOKEN_RE } from './config.js';
 
 const KEEP_DAYS = 35;          // local history for the panel
 const BATCH = 100;
-const MAX_SAMPLES = 25;        // Phase 0 sample recorder
+const MAX_SAMPLES = 40;        // sample recorder (Settings → Record samples)
 const TAB_STALE_MS = 11 * 60e3; // no heartbeat for this long = no Voice tab open
 const VOICE_URL = 'https://voice.google.com/';
 
@@ -112,6 +112,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
         if (!tabs.length) await openVoice();
         break;
       }
+      case 'idb-census': await set({ idb: msg.dbs }); break;
       case 'page-load':
         if (msg.fresh) await set({ needsVoiceReload: false, pageLoadAt: Date.now(), capturesSinceLoad: 0, apiSinceLoad: 0 });
         await refreshStatus();
@@ -174,12 +175,20 @@ async function onCapture({ url, body, reqBody }) {
   health.captures++;
   health.lastCaptureAt = Date.now();
   // diagnostics: which Voice endpoints the page uses (path only, no data)
-  const path = (String(url).match(/voiceclient\/([a-z0-9/_]+)/i) || [])[1] || 'other';
+  const u = String(url);
+  const legacy = /voiceclient\//.test(u);
+  const path = ((u.match(/voiceclient\/([a-z0-9/_]+)/i) || u.match(/\$rpc\/google\.voice\.([A-Za-z0-9_.]+\/[A-Za-z0-9_]+)/) || [])[1])
+    || (/signaler/.test(u) ? 'push-channel' : 'other');
   health.endpoints = { ...(health.endpoints || {}), [path]: ((health.endpoints || {})[path] || 0) + 1 };
-  const { capturesSinceLoad = 0 } = await get('capturesSinceLoad');
-  await set({ capturesSinceLoad: capturesSinceLoad + 1 });
+  // shape only (no content): helps map new Voice formats from the dashboard diagnostics
+  if (!legacy) {
+    health.shapes = { ...(health.shapes || {}), [path.slice(0, 80)]: { len: body.length, head: body.slice(0, 1).replace(/[^\[\{)\]]/, '?'), at: Date.now() } };
+    const keys = Object.keys(health.shapes);
+    if (keys.length > 30) delete health.shapes[keys[0]];
+  }
 
-  if (st.debugRecord) {
+  // keep local samples of the new API automatically (never uploaded; admin downloads them redacted)
+  if (st.debugRecord || (!legacy && path !== 'push-channel')) {
     const samples = (st.samples || []).slice(-(MAX_SAMPLES - 1));
     samples.push({ url, at: Date.now(), body: body.slice(0, 200000), reqBody });
     await set({ samples });
@@ -194,6 +203,10 @@ async function onCapture({ url, body, reqBody }) {
   }
 
   const { events, agentNumber } = parseResponse(url, body, { agentNumber: st.agentNumber });
+  if (legacy || events.length || agentNumber) {
+    const { capturesSinceLoad = 0 } = await get('capturesSinceLoad');
+    await set({ capturesSinceLoad: capturesSinceLoad + 1 });
+  }
   if (agentNumber && agentNumber !== st.agentNumber) await set({ agentNumber });
 
   const local = st.events || {};
@@ -276,13 +289,14 @@ chrome.alarms.onAlarm.addListener(async (a) => {
 /** Health + diagnostics sent with every sync (no message content, only counts and endpoint paths). */
 async function healthReport(health = {}) {
   await flushNet();
-  const x = await get(['status', 'net', 'capturesSinceLoad', 'apiSinceLoad', 'pageLoadAt', 'needsVoiceReload', 'paused', 'pausedAt']);
+  const x = await get(['status', 'net', 'capturesSinceLoad', 'apiSinceLoad', 'pageLoadAt', 'needsVoiceReload', 'paused', 'pausedAt', 'idb', 'debugRecord', 'samples']);
   return {
     ...health, sendChecks: undefined,
     paused: !!x.paused, status: x.status?.text || null,
     extensionVersion: chrome.runtime.getManifest().version, parserVersion: PARSER_VERSION,
     pageLoadAt: x.pageLoadAt || null, capturesSinceLoad: x.capturesSinceLoad || 0, apiSinceLoad: x.apiSinceLoad || 0,
-    needsVoiceReload: !!x.needsVoiceReload, net: x.net || {},
+    needsVoiceReload: !!x.needsVoiceReload, net: x.net || {}, idb: x.idb || [],
+    recording: !!x.debugRecord, samples: (x.samples || []).length,
   };
 }
 

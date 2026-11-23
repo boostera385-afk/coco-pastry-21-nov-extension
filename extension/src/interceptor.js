@@ -3,13 +3,15 @@
 // Watches EVERY voiceclient endpoint (Google may load threads through different ones); the
 // service worker decides what can be parsed and records which endpoints are seen (diagnostics).
 (() => {
-  const VERSION = 2;
+  const VERSION = 3;
   if ((window.__cocoInterceptor || 0) >= VERSION) return;
   const firstInstall = !window.__cocoInterceptor;
   window.__cocoInterceptor = VERSION;
 
-  const MATCH = /\/voice\/v1\/voiceclient\//;
+  // Old JSON API + newer gRPC-web ($rpc) API on voice.clients6 + the live push channel (signaler).
+  const MATCH = /\/voice\/v1\/voiceclient\/|voice\.clients6\.google\.com\/\$rpc\/|signaler-pa\.clients6\.google\.com\/punctual\/multi-watch\/channel/;
   const MAX = 8 * 1024 * 1024;
+  // NOTE: a page hooked by an older copy keeps the older MATCH until Voice is reloaded.
 
   const emit = (url, body, reqBody) => {
     if (typeof body !== 'string' || !body || body.length > MAX) return;

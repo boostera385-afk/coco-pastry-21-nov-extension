@@ -23,6 +23,28 @@
   const timer = setInterval(beat, 5 * 60 * 1000);
   // fresh = injected at document_start by a normal page load (interceptor is the current version)
   send({ type: 'page-load', fresh: document.readyState === 'loading' });
+
+  // Diagnostics: which IndexedDB databases/stores Google Voice keeps (names + row counts only, no data).
+  async function idbCensus() {
+    try {
+      const dbs = (await indexedDB.databases?.()) || [];
+      const out = [];
+      for (const { name } of dbs.slice(0, 15)) {
+        if (!name) continue;
+        const db = await new Promise((res) => { const r = indexedDB.open(name); r.onsuccess = () => res(r.result); r.onerror = () => res(null); r.onupgradeneeded = () => { r.transaction.abort(); res(null); }; });
+        if (!db) continue;
+        const stores = [];
+        for (const s of [...db.objectStoreNames].slice(0, 30)) {
+          const n = await new Promise((res) => { try { const q = db.transaction(s, 'readonly').objectStore(s).count(); q.onsuccess = () => res(q.result); q.onerror = () => res(-1); } catch { res(-1); } });
+          stores.push(`${s}:${n}`);
+        }
+        db.close();
+        out.push({ name: name.slice(0, 80), stores });
+      }
+      send({ type: 'idb-census', dbs: out });
+    } catch { /* ignore */ }
+  }
+  setTimeout(idbCensus, 20000);
   beat();
   document.addEventListener('visibilitychange', () => { if (!document.hidden) beat(); });
 })();
