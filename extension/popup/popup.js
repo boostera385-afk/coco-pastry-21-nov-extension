@@ -17,7 +17,9 @@ async function render() {
   const tz = st.timezone || DEFAULT_TZ;
   const today = dayKey(Date.now(), tz);
   const from = range === 'today' ? today : addDays(today, range === '7d' ? -6 : -29);
-  const r = summarize(Object.values(st.events || {}), from, today, tz);
+  const key = range === 'today' ? 'today' : range;
+  const serverFresh = st.serverSummary?.[key] && Date.now() - (st.serverSummaryAt || 0) < 15 * 60e3 && !(st.queue || []).length;
+  const r = serverFresh ? st.serverSummary[key] : summarize(Object.values(st.events || {}), from, today, tz);
 
   for (const k of ['outboundTotal', 'outboundCalls', 'outboundTexts', 'inboundCalls', 'inboundTexts']) $(k).textContent = r[k];
   $('outSub').textContent = `every call and text · ${r.contactsReached} contact${r.contactsReached === 1 ? '' : 's'} · ${r.inboundTotal} inbound`;
@@ -31,7 +33,7 @@ async function render() {
   $('dot').className = `dot ${DOT[level] ?? ''}`;
   $('statusText').textContent = st.status?.text || 'Starting…';
   $('who').textContent = st.agentToken ? `Connected as ${st.agentName || 'agent'}${st.agentNumber ? ` · ${st.agentNumber}` : ''}` : '';
-  $('statusSub').textContent = st.agentToken ? `Last sync ${ago(st.lastSyncAt)}${st.lastSyncError ? ` · ${st.lastSyncError}` : ''}` : '';
+  $('statusSub').textContent = st.agentToken ? `Last sync ${ago(st.lastSyncAt)}${st.lastSyncError ? ` · ${st.lastSyncError}` : ''} · numbers ${serverFresh ? 'from dashboard' : 'local (not yet synced)'}` : '';
   $('openVoice').hidden = level !== 'warn' || !/Open Google Voice/.test(st.status?.text || '');
   $('setup').hidden = !!st.agentToken;
   $('reloadVoice').hidden = !/reload Google Voice/i.test(st.status?.text || '');

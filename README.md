@@ -58,7 +58,7 @@ Anything unclassified is still stored in `unclassified_events` with the raw payl
 
 ```
 node --test extension/test                      # unit: metrics, timezone, parser (incl. real Voice SMS payload)
-node tests/e2e/run.mjs                          # virtual end-to-end (91 checks), see below
+node tests/e2e/run.mjs                          # virtual end-to-end (94 checks), see below
 node tests/e2e/team.mjs .env dashboard/config.js   # team/permissions (13 checks)
 node scripts/reparse.mjs [--dry]                # re-run the current parser over stored raw events
 ```

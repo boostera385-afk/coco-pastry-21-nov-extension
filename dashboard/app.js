@@ -614,6 +614,26 @@ const copyBtn = (id, value) => {
   });
 };
 
+/** Extension health/diagnostics reported with each sync (no message content). */
+function diagHtml(a) {
+  const h = a.last_health || {};
+  const net = Object.entries(h.net || {}).sort((x, y) => y[1] - x[1]).slice(0, 12);
+  const row = (k, v) => `<tr><td class="muted">${esc(k)}</td><td>${v}</td></tr>`;
+  return `<div class="two"><table><tbody>
+      ${row('Status', esc(h.status || '—'))}
+      ${row('Extension / parser', `${esc(h.extensionVersion || '?')} / ${esc(h.parserVersion || a.parser_version || '?')}`)}
+      ${row('Last check-in', a.last_heartbeat_at ? `${fmtTime(a.last_heartbeat_at)} (${ago(a.last_heartbeat_at)})` : 'never')}
+      ${row('Voice page loaded', h.pageLoadAt ? ago(new Date(h.pageLoadAt).toISOString()) : '—')}
+      ${row('Voice data read since page load', n(h.capturesSinceLoad))}
+      ${row('Voice API calls seen since page load', n(h.apiSinceLoad))}
+      ${row('Total responses read / events parsed', `${n(h.captures)} / ${n(h.parsed)} (unclassified ${n(h.unknown)})`)}
+      ${row('Last data read', h.lastCaptureAt ? ago(new Date(h.lastCaptureAt).toISOString()) : 'never')}
+      ${row('Needs Voice reload', h.needsVoiceReload ? '<b style="color:var(--yellow)">yes</b>' : 'no')}
+    </tbody></table>
+    <div><div class="small muted">Google endpoints the Voice page called (count)</div>
+      <table><tbody>${net.map(([k, v]) => `<tr><td class="small" style="white-space:normal;word-break:break-all">${esc(k)}</td><td class="num">${n(v)}</td></tr>`).join('') || '<tr><td class="muted small">none reported yet</td></tr>'}</tbody></table></div></div>`;
+}
+
 async function renderSettings(view) {
   const [{ data: agents }, users] = await Promise.all([
     sb.from('agents').select('id, name, email, gv_number, active, tracking_start, last_heartbeat_at, last_health, parser_version, token_hint').order('name'),
@@ -669,7 +689,8 @@ async function renderSettings(view) {
         <td class="small">${a.token_hint ? `…${esc(a.token_hint)}` : '—'}</td>
         <td>${a.tracking_start ? fmtTime(a.tracking_start) : 'when connected'}</td>
         <td><input type="checkbox" class="aActive" ${a.active ? 'checked' : ''} style="width:auto"></td>
-        <td style="white-space:nowrap"><button class="btn dark aSave">Save</button> <button class="btn dark aRotate">New token</button></td></tr>`).join('') || '<tr><td colspan="7" class="empty">No agents yet — create an Agent user above, or add a tracking-only agent below.</td></tr>'}</tbody></table></div>
+        <td style="white-space:nowrap"><button class="btn dark aSave">Save</button> <button class="btn dark aRotate">New token</button> <button class="btn dark aDiag">Diagnostics</button></td></tr>
+        <tr class="diag" data-for="${a.id}" hidden><td colspan="7">${diagHtml(a)}</td></tr>`).join('') || '<tr><td colspan="7" class="empty">No agents yet — create an Agent user above, or add a tracking-only agent below.</td></tr>'}</tbody></table></div>
       <div class="row" style="margin-top:12px">
         <div><label>Name</label><input id="nName" placeholder="tracking-only agent (no login)"></div>
         <div><label>Email</label><input id="nEmail" type="email" placeholder="optional"></div>
@@ -806,6 +827,7 @@ async function renderSettings(view) {
     $('.aSave', tr).addEventListener('click', async () => {
       try { await rpc('update_agent', { p_agent: id, p_name: $('.aName', tr).value, p_account_type: 'workspace', p_active: $('.aActive', tr).checked }); toast('Saved'); } catch (e) { toast(e.message); }
     });
+    $('.aDiag', tr).addEventListener('click', () => { const d = view.querySelector(`tr.diag[data-for="${id}"]`); d.hidden = !d.hidden; });
     $('.aRotate', tr).addEventListener('click', async () => {
       if (!confirm('Generate a new token? The old one stops working immediately.')) return;
       try { showToken($('.aName', tr).value, await rpc('rotate_agent_token', { p_agent: id })); } catch (e) { toast(e.message); }

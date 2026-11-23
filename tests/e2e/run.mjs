@@ -206,6 +206,10 @@ async function main() {
   check('DB: outbound call answered with duration 125 s', Number(db1.cout) === 1);
   check('DB: inbound missed call', Number(db1.cmiss) === 1);
   check('DB: agent Voice number saved', db1.num === F.AGENT, db1.num);
+  const [{ h }] = await sql(`select last_health h from agents where id='${agentId}'`);
+  check('diagnostics reach the dashboard (version, captures since page load, status)', h && /^\d+\.\d+\.\d+$/.test(h.extensionVersion || '') && h.capturesSinceLoad > 0 && !!h.status && Object.keys(h.net || {}).some((k) => k.includes('voiceclient')), JSON.stringify(h).slice(0, 220));
+  const st1 = await store();
+  check('panel/badge use the server numbers after sync (same as dashboard)', st1.serverSummary?.today?.outboundTotal === sc.expect.outboundTotal, JSON.stringify(st1.serverSummary?.today));
 
   // ===== 3. Reload = no duplicates =====
   await loadVoice();
@@ -232,6 +236,8 @@ async function main() {
     outTotal: document.getElementById('outboundTotal').textContent, textsOut: document.getElementById('outboundTexts').textContent,
     pause: document.getElementById('pause').textContent })`);
   check('side panel shows "Tracking" + "Connected as E2E Bot"', panel.status === 'Tracking' && /Connected as E2E Bot/.test(panel.who), JSON.stringify(panel));
+  const src = await cdp.eval(panelS, "document.getElementById('statusSub').textContent");
+  check('side panel says its numbers come from the dashboard', /from dashboard/.test(src), src);
   check('side panel numbers match (outbound total, texts out)', panel.outTotal === String(sc.expect.outboundTotal + 1) && panel.textsOut === String(sc.expect.outboundTexts + 1), JSON.stringify(panel));
 
   // ===== 6. Pause / resume =====

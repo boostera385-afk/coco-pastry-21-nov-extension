@@ -44,6 +44,43 @@ chrome.runtime.onInstalled.addListener(async ({ reason }) => {
 });
 chrome.runtime.onStartup.addListener(setup);
 
+/** Local cache is only a fallback; drop it when the parser changes (server counts are the truth). */
+async function invalidateCacheOnParserChange() {
+  const { parserVersion } = await get('parserVersion');
+  if (parserVersion !== PARSER_VERSION) {
+    await serial(() => set({ events: {}, parserVersion: PARSER_VERSION, heartbeatPending: true }));
+  }
+}
+invalidateCacheOnParserChange();
+
+// ---------- network census (observe only): which Google endpoints the Voice page really calls ----------
+// Explains "no data" situations: if Voice calls APIs we can't read, the dashboard shows exactly which.
+const API_RE = /voiceclient|\/voice\/v\d|\$rpc\/|batchexecute|\/v1\/voice/i;
+let netBuf = {};
+let netFlush = null;
+chrome.webRequest.onCompleted.addListener((d) => {
+  if (!d.initiator || !d.initiator.startsWith('https://voice.google.com')) return;
+  if (d.type !== 'xmlhttprequest' && d.type !== 'other' && d.type !== 'ping') return;
+  let key;
+  try {
+    const u = new URL(d.url);
+    key = `${u.host}${u.pathname.replace(/\/[A-Za-z0-9_-]{20,}/g, '/:id').replace(/\/\d+/g, '/:n')}`.slice(0, 120);
+  } catch { return; }
+  const k = `${key}${d.tabId < 0 ? ' [worker]' : ''}`;
+  netBuf[k] = (netBuf[k] || 0) + 1;
+  if (API_RE.test(key)) netBuf.__api = (netBuf.__api || 0) + 1;
+  clearTimeout(netFlush);
+  netFlush = setTimeout(flushNet, 3000);
+}, { urls: ['https://*.google.com/*', 'https://*.googleapis.com/*'] });
+
+async function flushNet() {
+  const buf = netBuf; netBuf = {};
+  const { net = {}, apiSinceLoad = 0 } = await get(['net', 'apiSinceLoad']);
+  for (const [k, v] of Object.entries(buf)) if (k !== '__api') net[k] = (net[k] || 0) + v;
+  const top = Object.fromEntries(Object.entries(net).sort((a, b) => b[1] - a[1]).slice(0, 40));
+  await set({ net: top, apiSinceLoad: apiSinceLoad + (buf.__api || 0) });
+}
+
 /** Content scripts only auto-inject on page load; cover Voice tabs that were already open. */
 async function injectIntoOpenVoiceTabs() {
   const tabs = await chrome.tabs.query({ url: 'https://voice.google.com/*' });
@@ -76,7 +113,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
         break;
       }
       case 'page-load':
-        if (msg.fresh) await set({ needsVoiceReload: false, pageLoadAt: Date.now(), capturesSinceLoad: 0 });
+        if (msg.fresh) await set({ needsVoiceReload: false, pageLoadAt: Date.now(), capturesSinceLoad: 0, apiSinceLoad: 0 });
         await refreshStatus();
         break;
       case 'reset-local': await serial(() => set({ events: {}, queue: [] })); break;
@@ -193,10 +230,13 @@ async function onCapture({ url, body, reqBody }) {
 
 // ---------- shared status: badge + summary for panel and widget ----------
 async function refreshStatus() {
-  const st = await get(['events', 'timezone', 'agentToken', 'lastHeartbeat', 'lastSyncError', 'queue', 'paused', 'lastSyncAt', 'needsVoiceReload', 'pageLoadAt', 'capturesSinceLoad']);
+  const st = await get(['events', 'timezone', 'agentToken', 'lastHeartbeat', 'lastSyncError', 'queue', 'paused', 'lastSyncAt',
+    'needsVoiceReload', 'pageLoadAt', 'capturesSinceLoad', 'apiSinceLoad', 'serverSummary', 'serverSummaryAt']);
   const tz = st.timezone || DEFAULT_TZ;
   const today = dayKey(Date.now(), tz);
-  const summary = summarize(Object.values(st.events || {}), today, today, tz);
+  // Prefer the server's numbers (same as the dashboard); fall back to the local cache when offline.
+  const fresh = st.serverSummary?.today && Date.now() - (st.serverSummaryAt || 0) < 15 * 60e3 && !(st.queue || []).length;
+  const summary = fresh ? st.serverSummary.today : summarize(Object.values(st.events || {}), today, today, tz);
 
   let level = 'ok';
   let text = 'Tracking';
@@ -204,7 +244,12 @@ async function refreshStatus() {
   else if (st.paused) { level = 'paused'; text = 'Paused'; }
   else if (!st.lastHeartbeat || Date.now() - st.lastHeartbeat > TAB_STALE_MS) { level = 'warn'; text = 'Open Google Voice to track'; }
   else if (st.needsVoiceReload) { level = 'warn'; text = 'Reload Google Voice to finish the update'; }
-  else if (st.pageLoadAt && !st.capturesSinceLoad && Date.now() - st.pageLoadAt > 90e3) { level = 'bad'; text = 'No Voice data detected — reload Google Voice'; }
+  else if (st.pageLoadAt && !st.capturesSinceLoad && Date.now() - st.pageLoadAt > 90e3) {
+    level = 'bad';
+    text = st.apiSinceLoad > 0
+      ? 'Voice is active but its data can\'t be read — diagnostics sent to your admin'
+      : 'No Voice data detected — reload Google Voice';
+  }
   else if (st.lastSyncError) { level = 'bad'; text = 'Sync error — retrying'; }
   else if ((st.queue || []).length) { level = 'warn'; text = `${st.queue.length} waiting to sync`; }
 
@@ -228,6 +273,19 @@ chrome.alarms.onAlarm.addListener(async (a) => {
   await refreshStatus();
 });
 
+/** Health + diagnostics sent with every sync (no message content, only counts and endpoint paths). */
+async function healthReport(health = {}) {
+  await flushNet();
+  const x = await get(['status', 'net', 'capturesSinceLoad', 'apiSinceLoad', 'pageLoadAt', 'needsVoiceReload', 'paused', 'pausedAt']);
+  return {
+    ...health, sendChecks: undefined,
+    paused: !!x.paused, status: x.status?.text || null,
+    extensionVersion: chrome.runtime.getManifest().version, parserVersion: PARSER_VERSION,
+    pageLoadAt: x.pageLoadAt || null, capturesSinceLoad: x.capturesSinceLoad || 0, apiSinceLoad: x.apiSinceLoad || 0,
+    needsVoiceReload: !!x.needsVoiceReload, net: x.net || {},
+  };
+}
+
 let syncing = false;
 async function sync() {
   if (syncing) return { ok: false, error: 'busy' };
@@ -249,7 +307,7 @@ async function sync() {
           parser_version: PARSER_VERSION,
           agent_number: st.agentNumber || null,
           tracking_start: st.trackingStart ? new Date(st.trackingStart).toISOString() : null,
-          heartbeat: { at: new Date().toISOString(), health: { ...st.health, sendChecks: undefined, status: (await get('status')).status?.text || null } },
+          heartbeat: { at: new Date().toISOString(), health: await healthReport(st.health) },
           events: batch,
         }),
         signal: AbortSignal.timeout(30000),
@@ -258,6 +316,7 @@ async function sync() {
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       const out = await res.json();
       if (out.agent?.name) await set({ agentName: out.agent.name });
+      if (out.summary) await set({ serverSummary: out.summary, serverSummaryAt: Date.now() });
       if (out.config) {
         const upd = { timezone: out.config.timezone };
         if (out.config.tracking_start) upd.trackingStart = Date.parse(out.config.tracking_start);
