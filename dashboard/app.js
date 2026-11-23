@@ -272,7 +272,8 @@ function totals(rows) {
 
 function insights(t, rows, daily) {
   const out = [];
-  if (t.missed_calls) out.push(['bad', `${n(t.missed_calls)} inbound call${t.missed_calls > 1 ? 's were' : ' was'} missed. Best practice: call back within 1 hour.`]);
+  if (t.missed_calls) out.push(['bad', `${n(t.missed_calls)} incoming call${t.missed_calls > 1 ? 's were' : ' was'} missed (no message left). Best practice: call back within 1 hour.`]);
+  if (t.voicemails) out.push(['bad', `${n(t.voicemails)} voicemail${t.voicemails > 1 ? 's' : ''} received — listen in Conversations and call back within 1 hour.`]);
   if (t.outbound_calls) {
     const c = t.connected_calls / t.outbound_calls;
     const v = t.conversations / t.outbound_calls;
@@ -358,8 +359,8 @@ async function renderOverview(view) {
       ${kpi('Calls out', n(t.outbound_calls), t.outbound_calls ? `${n(t.connected_calls)} picked up · ${n(t.conversations)} conversation${t.conversations === 1 ? '' : 's'}` : 'no calls yet', { icon: ICON.callOut })}
       ${kpi('Texts out', n(t.outbound_texts), 'sent', { icon: ICON.textOut })}
       ${kpi('Inbound', n(t.inbound_total), 'every call + text + voicemail', { tone: 'g', icon: ICON.in })}
-      ${kpi('Calls in', n(t.inbound_calls), `${n(t.missed_calls)} missed`, { tone: t.missed_calls ? 'r' : 'g', icon: ICON.callIn })}
-      ${kpi('Texts in', n(t.inbound_texts), `${n(t.voicemails)} voicemails`, { tone: 'g', icon: ICON.textIn })}
+      ${kpi('Calls in', n(t.inbound_calls), `${n(t.inbound_calls - t.missed_calls - t.voicemails)} answered · ${n(t.missed_calls)} missed · ${plural(t.voicemails, 'voicemail')}`, { tone: t.missed_calls || t.voicemails ? 'r' : 'g', icon: ICON.callIn })}
+      ${kpi('Texts in', n(t.inbound_texts), 'received', { tone: 'g', icon: ICON.textIn })}
       ${kpi('Reply rate', t.response_rate == null ? '—' : `${t.response_rate.toFixed(0)}%`, `avg reply ${mins(t.avg_reply_min)}`, { tone: t.avg_reply_min > 60 ? 'r' : 'g', icon: ICON.clock })}
     </div>
     <div class="two">
@@ -435,7 +436,7 @@ async function renderContacts(view) {
 
 // ---------- analysis (admin): rule-based checks from the database, reviewed by an admin ----------
 const RULES = {
-  missed_call_not_returned: { label: 'Missed call not returned', why: 'Return missed calls and voicemails quickly — customers who call usually want something now.' },
+  missed_call_not_returned: { label: 'Missed call / voicemail not returned', why: 'Return missed calls and voicemails quickly — customers who call usually want something now.' },
   text_not_answered: { label: 'Text not answered', why: 'Reply to customer texts within the target time; only the first text of a burst is measured.' },
   opt_out_ignored: { label: 'Opt-out ignored', why: 'If a customer texts STOP / unsubscribe / "don\'t text me", never contact them again (compliance).' },
   over_contacting: { label: 'Over-contacting', why: 'Too many attempts in one day without any reply feels like spam — space them out.' },
@@ -615,7 +616,7 @@ async function renderDetail(key, head) {
       ${stat('conversations', n(out.filter((c) => c.conversation).length))}${stat('no answer', n(out.filter((c) => !c.duration_sec).length))}
       ${stat('talk time', dur(calls.reduce((s, c) => s + (c.duration_sec || 0), 0)))}
       ${stat('texts out / in', `${texts('outbound')} / ${texts('inbound')}`)}
-      ${stat('calls in', n(calls.length - out.length))}${stat('voicemails', n(items.filter((i) => i.kind === 'voicemail').length))}
+      ${stat('calls in', n(calls.length - out.length + items.filter((i) => i.kind === 'voicemail').length))}${stat('missed', n(calls.filter((c) => c.direction === 'inbound' && c.outcome === 'missed').length))}${stat('voicemails', n(items.filter((i) => i.kind === 'voicemail').length))}
     </div>
     <div class="timeline">${rows || '<div class="empty">Empty</div>'}</div>`;
 }

@@ -1,12 +1,21 @@
 {
-  "version": "0.7.0",
-  "released": "2026-11-23T11:18:44.304Z",
+  "version": "0.7.1",
+  "released": "2026-11-23T12:05:44.575Z",
   "download": "/downloads/coco-voice-extension.zip",
-  "versioned": "/downloads/coco-voice-extension-0.7.0.zip",
-  "size": 39862,
-  "sha256": "d0aaf1aaaae46e487247ed5aba7a896a1fcf1fbf9c2000f15eb719e911702022",
+  "versioned": "/downloads/coco-voice-extension-0.7.1.zip",
+  "size": 40207,
+  "sha256": "11d486b773c907213bb8db8acf72ea692077591546faa278beacf946a9632a15",
   "min_chrome": "116",
   "history": [
+    {
+      "version": "0.7.1",
+      "released": "2026-11-23T12:05:44.575Z",
+      "notes": [
+        "Fix: tracking could stop after a voicemail arrived (\"Voice is active but its data can't be read\")",
+        "Safety nets so a stuck step can never stop tracking or syncing",
+        "Voicemails shown separately from missed calls"
+      ]
+    },
     {
       "version": "0.7.0",
       "released": "2026-11-23T11:18:44.304Z",

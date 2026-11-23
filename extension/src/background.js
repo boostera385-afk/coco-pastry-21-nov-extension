@@ -14,8 +14,19 @@ const get = (keys) => chrome.storage.local.get(keys);
 const set = (obj) => chrome.storage.local.set(obj);
 
 // All read-modify-write of events/queue goes through this chain (no lost updates).
+// Never call serial() from inside a serial task. Safety net: a task that hangs is abandoned after
+// 30 s so it can never block tracking for good (the next task continues).
 let chain = Promise.resolve();
-const serial = (fn) => (chain = chain.then(fn, fn));
+const SERIAL_TIMEOUT_MS = 30e3;
+const serial = (fn) => {
+  const run = () => Promise.race([
+    Promise.resolve().then(fn),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('serial task timed out')), SERIAL_TIMEOUT_MS)),
+  ]);
+  const p = chain.then(run, run);
+  chain = p.catch(() => {});
+  return p;
+};
 
 // ---------- lifecycle ----------
 function setup() {
@@ -297,11 +308,10 @@ async function onCapture({ url, body, reqBody }) {
   // audio (voicemail / call recording) is copied to the dashboard after the event itself is synced
   const withMedia = events.filter((e) => e.media_url && Date.parse(e.occurred_at) >= since);
   if (withMedia.length) {
-    await serial(async () => {
-      const { media = [], mediaDone = {} } = await get(['media', 'mediaDone']);
-      for (const e of withMedia) if (!mediaDone[e.gv_id] && !media.some((x) => x.id === e.gv_id)) media.push({ id: e.gv_id, url: e.media_url, tries: 0 });
-      await set({ media });
-    });
+    // NOTE: onCapture already runs inside serial(); calling serial() here would wait on itself (deadlock).
+    const { media = [], mediaDone = {} } = await get(['media', 'mediaDone']);
+    for (const e of withMedia) if (!mediaDone[e.gv_id] && !media.some((x) => x.id === e.gv_id)) media.push({ id: e.gv_id, url: e.media_url, tries: 0 });
+    await set({ media });
   }
   if (added) await refreshStatus();
   // New calls/texts reach the dashboard within seconds (debounced; the 1-minute alarm is the fallback).
@@ -421,10 +431,11 @@ async function uploadMedia() {
   }
 }
 
-let syncing = false;
+let syncing = 0; // start time of the running sync (0 = idle)
 async function sync() {
-  if (syncing) return { ok: false, error: 'busy' };
-  syncing = true;
+  // a sync stuck for over 3 minutes is treated as dead, so syncing can never stop for good
+  if (syncing && Date.now() - syncing < 3 * 60e3) return { ok: false, error: 'busy' };
+  syncing = Date.now();
   try {
     const st = await get(['agentToken', 'queue', 'agentNumber', 'heartbeatPending', 'health', 'backoffUntil', 'trackingStart']);
     if (!st.agentToken) return { ok: false, error: 'Not connected' };
@@ -476,6 +487,6 @@ async function sync() {
     await set({ lastSyncError: message, failures: failures + 1, backoffUntil: Date.now() + wait });
     return { ok: false, error: message };
   } finally {
-    syncing = false;
+    syncing = 0;
   }
 }

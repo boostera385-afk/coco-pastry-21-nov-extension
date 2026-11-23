@@ -15,10 +15,10 @@ let seq = 0;
 const id = (tag) => `e2e${tag}${(++seq).toString(16).padStart(6, '0')}${'0'.repeat(28)}`.slice(0, 40);
 
 /** Build one Voice message array. */
-export function msg({ tag, at, phone, type, text = null, duration = null, transcript = null, thread }) {
+export function msg({ tag, at, phone, type, text = null, duration = null, transcript = null, media = null, thread }) {
   const m = new Array(32).fill(null);
   m[0] = id(tag); m[1] = at; m[2] = phone; m[3] = [phone, AGENT, null, null, null, null, 0];
-  m[4] = type; m[5] = 1; m[9] = text; m[8] = duration; m[21] = transcript ? [[transcript.split(' ')], null, 1] : null;
+  m[4] = type; m[5] = 1; m[9] = text; m[8] = duration; m[11] = media; m[21] = transcript ? [[transcript.split(' ')], null, 1] : null;
   m[31] = thread;
   return m;
 }
@@ -42,7 +42,7 @@ export function scenario(now, connectAt) {
     ]),
     thread(tB, [
       msg({ tag: 'b1', at: t(35), phone: B, type: 4, thread: tB }),                        // inbound missed call
-      msg({ tag: 'b2', at: t(34), phone: B, type: 2, transcript: 'Hi, please call me back about my order.', thread: tB }),
+      msg({ tag: 'b2', at: t(34), phone: B, type: 2, transcript: 'Hi, please call me back about my order.', media: 'https://www.google.com/voice/media/svm/e2e/voicemail', thread: tB }),
     ]),
     thread(tC, [
       msg({ tag: 'c1', at: now - 3 * 864e5, phone: C, type: 11, text: 'old message (before install)', thread: tC }),

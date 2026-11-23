@@ -47,9 +47,9 @@ test('every call and every text counts; contacts = distinct numbers (Pakistan ti
   assert.equal(day.missedCalls, 1);
   assert.equal(day.inboundTexts, 1);
   assert.equal(day.voicemails, 1);
-  // a voicemail with no call record before it = a missed incoming call (how Google Voice stores it)
+  // a voicemail with no call record before it = an incoming call whose outcome is "voicemail" (not "missed")
   const vmOnly = summarize([{ k: 'voicemail', d: 'in', c: '+15550000009', at: at('2026-11-23T09:00:00Z') }], '2026-11-23', '2026-11-23', PK);
-  assert.deepEqual([vmOnly.inboundCalls, vmOnly.missedCalls, vmOnly.voicemails, vmOnly.inboundTotal], [1, 1, 1, 1]);
+  assert.deepEqual([vmOnly.inboundCalls, vmOnly.missedCalls, vmOnly.voicemails, vmOnly.inboundTotal], [1, 0, 1, 1]);
   const two = summarize(ev, '2026-11-23', '2026-11-24', PK);
   assert.equal(two.outboundTotal, 5);   // 20:00 UTC call falls on Nov 24 in Pakistan
   assert.equal(two.contactsReached, 2);

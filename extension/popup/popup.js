@@ -25,10 +25,10 @@ async function render() {
   $('outSub').textContent = `every call and text · ${r.contactsReached} contact${r.contactsReached === 1 ? '' : 's'} · ${r.inboundTotal} inbound`;
   $('connected').textContent = `${r.connectedCalls} picked up · ${r.conversations ?? 0} conv.`;
   $('connected').title = 'Picked up = person, voicemail or bot answered (Voice cannot tell which). Conversation = call of 60 s or more.';
-  $('missed').textContent = `${r.missedCalls} missed`;
-  $('callsInTile').classList.toggle('r', r.missedCalls > 0);
-  $('callsInTile').classList.toggle('g', !r.missedCalls);
-  $('vm').textContent = `${r.voicemails} voicemails`;
+  $('missed').textContent = `${r.missedCalls} missed · ${r.voicemails} voicemail${r.voicemails === 1 ? '' : 's'}`;
+  $('callsInTile').classList.toggle('r', r.missedCalls + r.voicemails > 0);
+  $('callsInTile').classList.toggle('g', !(r.missedCalls + r.voicemails));
+  $('vm').textContent = 'received';
 
   const level = st.status?.level || (st.agentToken ? 'warn' : 'bad');
   $('dot').className = `dot ${DOT[level] ?? ''}`;
