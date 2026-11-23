@@ -53,5 +53,16 @@ Anything unclassified is still stored in `unclassified_events` with the raw payl
 ## Tests
 
 ```
-node --test extension/test
+node --test extension/test                      # unit: metrics, timezone, parser (incl. real Voice SMS payload)
+node tests/e2e/run.mjs                          # virtual end-to-end (65 checks), see below
+node tests/e2e/team.mjs .env dashboard/config.js   # team/permissions (12 checks)
+node scripts/reparse.mjs [--dry]                # re-run the current parser over stored raw events
 ```
+
+`tests/e2e/run.mjs` loads the real extension in Playwright's Chromium, serves a mock `voice.google.com`
+(Voice-format payloads from `tests/e2e/fixtures.mjs`), and talks to the **real** Supabase project with a
+throwaway agent and users that are deleted afterwards. It covers: token connect, install-day cutoff,
+texts/calls/voicemail/unknown capture, once-per-day reach, badge, widget, side panel, sent-text self-check,
+no duplicates on reload, pause/resume, sync, dashboard metrics, reply rate/time, live dashboard UI,
+transcript security (agent vs manager vs anonymous) and revoked tokens. SMS format is verified from a
+live account; call/voicemail codes are still a best guess until real calls are captured.

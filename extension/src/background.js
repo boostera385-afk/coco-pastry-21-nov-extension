@@ -247,6 +247,7 @@ async function sync() {
     } while (batch.length === BATCH);
 
     await set({ lastSyncAt: Date.now(), lastSyncError: null, failures: 0, backoffUntil: 0 });
+    await refreshStatus(); // status/badge reflect the empty queue right away
     return { ok: true, sent };
   } catch (e) {
     const { failures = 0 } = await get('failures');
