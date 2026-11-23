@@ -66,3 +66,7 @@ a { color: var(--accent); text-decoration: none; }
 input, select, textarea { background: var(--surface-2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: 14px var(--body); width: 100%; }
 label { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; margin: 12px 0 4px; }
 .muted { color: var(--muted); } .small { font-size: 12px; }
+
+/* logo mark next to the wordmark */
+.logo { display: inline-flex; align-items: center; gap: 8px; }
+.logo img { flex: none; margin-left: -4px; }

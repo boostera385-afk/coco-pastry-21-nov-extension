@@ -1,18 +1,69 @@
 {
   "manifest_version": 3,
   "name": "Coco Voice Tracker",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Counts Google Voice outbound reach and inbound activity and syncs it to your team's Coco Voice dashboard.",
   "minimum_chrome_version": "116",
-  "permissions": ["storage", "unlimitedStorage", "alarms", "sidePanel", "scripting"],
-  "host_permissions": ["https://voice.google.com/*", "https://yzcjawjncjvqgutpyejm.supabase.co/*"],
-  "background": { "service_worker": "src/background.js", "type": "module" },
-  "content_scripts": [
-    { "matches": ["https://voice.google.com/*"], "js": ["src/interceptor.js"], "world": "MAIN", "run_at": "document_start" },
-    { "matches": ["https://voice.google.com/*"], "js": ["src/content.js"], "run_at": "document_start" },
-    { "matches": ["https://voice.google.com/*"], "js": ["src/widget.js"], "run_at": "document_idle" }
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "alarms",
+    "sidePanel",
+    "scripting"
   ],
-  "side_panel": { "default_path": "popup/popup.html" },
-  "action": { "default_title": "Coco Voice Tracker" },
+  "host_permissions": [
+    "https://voice.google.com/*",
+    "https://yzcjawjncjvqgutpyejm.supabase.co/*"
+  ],
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://voice.google.com/*"
+      ],
+      "js": [
+        "src/interceptor.js"
+      ],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://voice.google.com/*"
+      ],
+      "js": [
+        "src/content.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://voice.google.com/*"
+      ],
+      "js": [
+        "src/widget.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "side_panel": {
+    "default_path": "popup/popup.html"
+  },
+  "action": {
+    "default_title": "Coco Voice Tracker",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
+  },
   "options_page": "options/options.html"
 }
