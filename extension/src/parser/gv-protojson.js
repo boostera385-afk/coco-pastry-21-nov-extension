@@ -6,16 +6,17 @@
 // can't classify is still sent with direction/kind = 'unknown' plus the raw array, so it
 // can be re-parsed server-side later and is visible on the dashboard as "unclassified".
 
-export const PARSER_VERSION = '0.4.1-sms-verified';
+export const PARSER_VERSION = '0.5.0-calls-verified';
 
 export const FIELD_MAP = {
   // thread = [threadId, isRead, [messages...], ...]
   thread: { id: 0, messages: 2 },
   // message = [msgId, timestampMs, phone, [phones], typeCode, read, …, text, …, threadId]
   // VERIFIED 2026-11-23 from live SMS (sent + received): id@0, timestamp ms@1, type@4, text@9.
-  // NOT yet verified: call / voicemail type codes, duration and transcript positions.
-  message: { id: 0, timestamp: 1, type: 4, text: 9, duration: 11, transcript: 12 },
-  // typeCode -> { kind, direction, outcome }   (10/11 verified; call codes still a best guess)
+  // VERIFIED 2026-11-23 from live calls: call threads are "c.<id>", type 14 = outgoing call,
+  // duration (seconds) @8, contact = participants[0] @3. NOT yet verified: incoming/missed/voicemail codes.
+  message: { id: 0, timestamp: 1, participants: 3, type: 4, duration: 8, text: 9, transcript: 12 },
+  // typeCode -> { kind, direction, outcome }   (10/11/14 verified; others still a best guess)
   typeCodes: {
     1:  { kind: 'call', direction: 'inbound', outcome: 'answered' },
     2:  { kind: 'voicemail', direction: 'inbound', outcome: 'voicemail' },
@@ -24,6 +25,7 @@ export const FIELD_MAP = {
     7:  { kind: 'call', direction: 'outbound', outcome: null },
     10: { kind: 'text', direction: 'inbound', outcome: null },
     11: { kind: 'text', direction: 'outbound', outcome: null },
+    14: { kind: 'call', direction: 'outbound', outcome: null },
   },
 };
 
@@ -60,7 +62,7 @@ export function contactFromThreadId(id) {
 
 function looksLikeThread(t) {
   return Array.isArray(t) && typeof t[FIELD_MAP.thread.id] === 'string'
-    && /^[tg]\./.test(t[FIELD_MAP.thread.id]) && Array.isArray(t[FIELD_MAP.thread.messages]);
+    && /^[tgc]\./.test(t[FIELD_MAP.thread.id]) && Array.isArray(t[FIELD_MAP.thread.messages]);
 }
 
 /** Collect thread arrays wherever they sit in the response. */
@@ -77,7 +79,9 @@ function parseMessage(m, threadId, agentNumber) {
   if (!at) return null;
   const code = m[FIELD_MAP.message.type];
   const cls = FIELD_MAP.typeCodes[code] || { kind: 'unknown', direction: 'unknown', outcome: null };
-  const contact = contactFromThreadId(threadId) || findPhone(m, 4, agentNumber);
+  const parts = m[FIELD_MAP.message.participants];
+  const first = Array.isArray(parts) && typeof parts[0] === 'string' && E164.test(parts[0]) && parts[0] !== agentNumber ? parts[0] : null;
+  const contact = contactFromThreadId(threadId) || first || findPhone(parts, 2, agentNumber) || findPhone(m, 4, agentNumber);
   const text = typeof m[FIELD_MAP.message.text] === 'string' ? m[FIELD_MAP.message.text] : null;
   const transcript = typeof m[FIELD_MAP.message.transcript] === 'string' ? m[FIELD_MAP.message.transcript] : null;
   const dur = Number(m[FIELD_MAP.message.duration]);

@@ -88,6 +88,16 @@ test('parser: real Google Voice SMS payload (verified 2026-11-23, numbers redact
   assert.equal(events[0].occurred_at, new Date(1795418264432).toISOString());
 });
 
+test('parser: real Google Voice outgoing call (verified 2026-11-23, numbers redacted)', () => {
+  const A = '+15550001111'; const C = '+15550002222';
+  const call = ['PCIFFQVSCJJBVKWSEJZLRUBQIAIIAKIAC', 1795426607582, A, [C, C, null, null, null, null, 0], 14, 1, null, null, 22, '', null, null, 2, 0, null, C, 0, null, [null, 1], null, null, null, null, null, null, null, null, null, null, 'c.PCIFFQVSCJJBVKWSEJZLRUBQIAIIAKIAC'];
+  const body = JSON.stringify([[['c.PCIFFQVSCJJBVKWSEJZLRUBQIAIIAKIAC', 1, [call], null, [[C, C, null, null, null, null, 0]], [1, 3]]]]);
+  for (const agentNumber of [A, undefined]) {
+    const { events } = parseResponse('https://clients6.google.com/voice/v1/voiceclient/api2thread/list', body, { agentNumber });
+    assert.deepEqual(events.map((e) => [e.type, e.direction, e.contact_number, e.duration_sec, e.body]), [['call', 'outbound', C, 22, null]]);
+  }
+});
+
 test('parser: ignores unrelated urls and bad json', () => {
   assert.deepEqual(parseResponse('https://x/other', '[]').events, []);
   assert.deepEqual(parseResponse('https://x/api2thread/list', 'not json').events, []);
