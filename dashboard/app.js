@@ -85,6 +85,7 @@ async function boot() {
   const linkError = await handleAuthRedirect();
   const { data: { session } } = await sb.auth.getSession();
   if (!session) return showLogin(linkError);
+  if (session.user.user_metadata?.must_change_password) passwordMode = 'first';
   if (passwordMode) return showNewPassword();
   state.user = session.user;
   const { data: prof } = await sb.from('profiles').select('role, agent_id').eq('user_id', state.user.id).maybeSingle();
@@ -109,7 +110,7 @@ async function boot() {
     + state.agents.map((a) => `<option value="${a.id}">${esc(a.name)}${a.active ? '' : ' (inactive)'}</option>`).join('');
   $('#agentFilter').hidden = !isMgr();
 
-  const links = [['overview', 'Overview'], ...(isMgr() ? [['conversations', 'Conversations']] : []), ['reports', isMgr() ? 'Reports' : 'My coaching'], ...(state.role === 'admin' ? [['settings', 'Settings']] : []), ['account', 'Account']];
+  const links = [['overview', 'Overview'], ...(isMgr() ? [['conversations', 'Conversations']] : []), ['reports', isMgr() ? 'Reports' : 'My coaching'], ...(isMgr() ? [['settings', state.role === 'admin' ? 'Settings' : 'Team']] : []), ['account', 'Account']];
   $('#navLinks').innerHTML = links.map(([k, l]) => `<a href="#/${k}" data-k="${k}">${l}</a>`).join('');
   route();
 }
@@ -133,7 +134,8 @@ function showNewPassword() {
   $('#login').hidden = false;
   $('#signinBlock').hidden = true;
   $('#newPwForm').hidden = false;
-  $('#loginIntro').textContent = passwordMode === 'invite' ? 'Welcome! Choose a password for your account.' : 'Choose a new password for your account.';
+  $('#loginIntro').textContent = passwordMode === 'first' ? 'Welcome! You signed in with a temporary password. Choose your own password to continue.'
+    : passwordMode === 'invite' ? 'Welcome! Choose a password for your account.' : 'Choose a new password for your account.';
   msg('');
   $('#newPw').focus();
 }
@@ -195,7 +197,7 @@ $('#newPwForm').addEventListener('submit', (e) => {
   const bad = pwProblem(a); if (bad) return msg(bad);
   if (a !== b) return msg("The two passwords don't match.");
   busy(e.submitter, async () => {
-    const { error } = await sb.auth.updateUser({ password: a });
+    const { error } = await sb.auth.updateUser({ password: a, data: { must_change_password: false } });
     if (error) return msg(friendly(error));
     passwordMode = null;
     toast('Password saved');
@@ -235,7 +237,7 @@ async function route() {
   try {
     if (page === 'conversations' && isMgr()) await renderConversations(view, arg);
     else if (page === 'reports') await renderReports(view);
-    else if (page === 'settings' && state.role === 'admin') await renderSettings(view);
+    else if (page === 'settings' && isMgr()) await renderSettings(view);
     else if (page === 'account') await renderAccount(view);
     else await renderOverview(view);
   } catch (err) {
@@ -541,22 +543,105 @@ async function renderAccount(view) {
     const b = $('#aPw2').value;
     const bad = pwProblem(a); if (bad) { $('#acctMsg').textContent = bad; return; }
     if (a !== b) { $('#acctMsg').textContent = "The two passwords don't match."; return; }
-    const { error } = await sb.auth.updateUser({ password: a });
+    const { error } = await sb.auth.updateUser({ password: a, data: { must_change_password: false } });
     $('#acctMsg').textContent = error ? friendly(error) : 'Password saved. A confirmation email is on its way.';
     if (!error) e.target.reset();
   });
 }
 
 // ---------- settings (admin) ----------
+/** Call the `team` Edge Function (create / reset / set_role / remove users). */
+async function team(body) {
+  const { data, error } = await sb.functions.invoke('team', { body });
+  if (error) {
+    let m = error.message;
+    try { m = (await error.context.json()).error || m; } catch { /* keep generic message */ }
+    throw new Error(m);
+  }
+  if (data?.error) throw new Error(data.error);
+  return data;
+}
+
+const ROLE_LABEL = { admin: 'Admin', manager: 'Manager', agent: 'Agent' };
+const copyBtn = (id, value) => {
+  const b = document.getElementById(id);
+  b?.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(value); b.textContent = 'Copied ✓'; } catch { toast('Select the text and copy it manually'); }
+  });
+};
+
 async function renderSettings(view) {
+  const isAdmin = state.role === 'admin';
   const [{ data: agents }, users] = await Promise.all([
     sb.from('agents').select('id, name, email, gv_number, account_type, active, tracking_start, last_heartbeat_at, last_health, parser_version, token_hint').order('name'),
     rpc('list_users', {}),
   ]);
   const s = state.settings;
   const opt = (v, cur, label = v) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
+  const agentName = (id) => (agents || []).find((a) => a.id === id)?.name || '';
+  const canTouch = (u) => u.user_id !== state.user.id && (isAdmin || u.role === 'agent');
+
   view.innerHTML = `
-    <div class="section-title"><h2>Settings</h2></div>
+    <div class="section-title"><h2>${isAdmin ? 'Settings' : 'Team'}</h2></div>
+
+    <div class="card"><h3>Team members (dashboard logins)</h3>
+      <p class="small">Create logins here — no email needed. Each new user gets a temporary password (shown once) and must choose their own password at first sign-in.
+      ${isAdmin ? 'Admins can create any role.' : 'Managers can create and manage agent logins.'} Only admins and managers can read message transcripts.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>User</th><th>Role</th><th>Tracking agent</th><th>Last sign-in</th><th></th></tr></thead>
+        <tbody>${(users || []).map((u) => `<tr data-uid="${u.user_id}" data-email="${esc(u.email)}">
+          <td>${esc(u.name || '')}<div class="small muted">${esc(u.email)}${u.user_id === state.user.id ? ' · you' : ''}</div></td>
+          <td>${isAdmin && u.user_id !== state.user.id
+            ? `<select class="uRoleSel">${['admin', 'manager', 'agent'].map((r) => opt(r, u.role, ROLE_LABEL[r])).join('')}</select>`
+            : esc(ROLE_LABEL[u.role] || u.role)}</td>
+          <td>${isAdmin && u.user_id !== state.user.id
+            ? `<select class="uAgentSel"><option value="">—</option>${(agents || []).map((a) => opt(a.id, u.agent_id, a.name)).join('')}</select>`
+            : esc(agentName(u.agent_id) || '—')}</td>
+          <td>${u.last_sign_in_at ? ago(u.last_sign_in_at) : '<span class="small muted">never</span>'}${u.must_change_password ? '<div class="small muted">temporary password</div>' : ''}</td>
+          <td style="white-space:nowrap">${canTouch(u) ? `${isAdmin ? '<button class="btn dark uSave">Save</button> ' : ''}<button class="btn dark uReset">Reset password</button> <button class="btn dark uRemove">Remove</button>` : ''}</td>
+        </tr>`).join('') || '<tr><td colspan="5" class="empty">No users yet</td></tr>'}</tbody>
+      </table></div>
+
+      <h3 style="margin-top:18px;font-size:16px">Create user</h3>
+      <div class="row">
+        <div><label>Name</label><input id="cName" placeholder="e.g. Sarah Khan"></div>
+        <div><label>Email</label><input id="cEmail" type="email" placeholder="name@company.com"></div>
+        <div><label>Role</label><select id="cRole">${(isAdmin ? ['agent', 'manager', 'admin'] : ['agent']).map((r) => opt(r, 'agent', ROLE_LABEL[r])).join('')}</select></div>
+      </div>
+      <div class="row" id="cAgentRow">
+        <div><label>Tracking</label><select id="cAgentMode">
+          <option value="new">Create a tracking agent + extension token</option>
+          ${(agents || []).map((a) => `<option value="${a.id}">Link to existing agent: ${esc(a.name)}</option>`).join('')}
+          <option value="none">No tracking (dashboard login only)</option>
+        </select></div>
+        <div><label>Google Voice account</label><select id="cType"><option value="personal">Personal Google Voice</option><option value="workspace">Google Workspace Voice</option></select></div>
+      </div>
+      <div class="row"><div><button class="btn" id="createUser">Create user</button></div></div>
+      <div id="credOut"></div>
+    </div>
+
+    <div class="card"><h3>Agents (Google Voice numbers)</h3>
+      <p class="small">One agent = one person / Voice number. The agent pastes their token into the Coco Voice extension (Settings → Connect) — no other setup. Tokens are shown once and stored only as a hash; use <b>New token</b> if one is lost or a laptop changes hands (the old token stops working immediately).</p>
+      <div class="table-wrap"><table><thead><tr><th>Name</th><th>Extension</th><th>Voice number</th><th>Account</th><th>Token</th><th>Tracking since</th><th>Active</th><th></th></tr></thead>
+      <tbody>${(agents || []).map((a) => `<tr data-id="${a.id}">
+        <td><input class="aName" value="${esc(a.name)}"><div class="small muted">${esc(a.email || '')}</div></td>
+        <td>${connBadge(a)}</td>
+        <td>${esc(a.gv_number || 'detected on first sync')}</td>
+        <td><select class="aType">${opt('personal', a.account_type, 'Personal')}${opt('workspace', a.account_type, 'Workspace')}</select></td>
+        <td class="small">${a.token_hint ? `…${esc(a.token_hint)}` : '—'}</td>
+        <td>${a.tracking_start ? fmtTime(a.tracking_start) : 'on first sync'}</td>
+        <td><input type="checkbox" class="aActive" ${a.active ? 'checked' : ''} style="width:auto"></td>
+        <td style="white-space:nowrap"><button class="btn dark aSave">Save</button> <button class="btn dark aRotate">New token</button></td></tr>`).join('') || '<tr><td colspan="8" class="empty">No agents yet — create an agent user above, or add a tracking-only agent below.</td></tr>'}</tbody></table></div>
+      <div class="row" style="margin-top:12px">
+        <div><label>Name</label><input id="nName" placeholder="tracking-only agent (no login)"></div>
+        <div><label>Email</label><input id="nEmail" type="email" placeholder="optional"></div>
+        <div><label>Account</label><select id="nType"><option value="personal">Personal Google Voice</option><option value="workspace">Google Workspace Voice</option></select></div>
+        <div><button class="btn dark" id="addAgent">Add agent &amp; create token</button></div>
+      </div>
+      <div id="tokenOut"></div>
+    </div>
+
+    ${isAdmin ? `
     <div class="card"><h3>Business &amp; Claude analysis</h3>
       <div class="row">
         <div><label>Business timezone</label><select id="sTz">${Object.entries(TZ_NAMES).map(([k, v]) => opt(k, s.business_timezone, `${v} (${k})`)).join('')}</select></div>
@@ -570,41 +655,76 @@ async function renderSettings(view) {
         <div><label>Keep data (days)</label><input id="sRet" type="number" min="30" value="${s.retention_days}"></div>
         <div><button class="btn" id="saveSettings">Save</button></div>
       </div>
-    </div>
+    </div>` : ''}`;
 
-    <div class="card"><h3>Agents (Google Voice numbers)</h3>
-      <p class="small">One agent = one person / Voice number. Each agent gets a personal token. The agent pastes it into the Coco Voice extension (Settings → Connect) — no other setup. Tokens are shown once and stored only as a hash; use <b>New token</b> if one is lost or a laptop changes hands (the old token stops working immediately).</p>
-      <div class="table-wrap"><table><thead><tr><th>Name</th><th>Extension</th><th>Voice number</th><th>Account</th><th>Token</th><th>Tracking since</th><th>Active</th><th></th></tr></thead>
-      <tbody>${(agents || []).map((a) => `<tr data-id="${a.id}">
-        <td><input class="aName" value="${esc(a.name)}"><div class="small muted">${esc(a.email || '')}</div></td>
-        <td>${connBadge(a)}</td>
-        <td>${esc(a.gv_number || 'detected on first sync')}</td>
-        <td><select class="aType">${opt('personal', a.account_type, 'Personal')}${opt('workspace', a.account_type, 'Workspace')}</select></td>
-        <td class="small">${a.token_hint ? `…${esc(a.token_hint)}` : '—'}</td>
-        <td>${a.tracking_start ? fmtTime(a.tracking_start) : 'on first sync'}</td>
-        <td><input type="checkbox" class="aActive" ${a.active ? 'checked' : ''} style="width:auto"></td>
-        <td><button class="btn dark aSave">Save</button> <button class="btn dark aRotate">New token</button></td></tr>`).join('') || '<tr><td colspan="8" class="empty">No agents yet — add the first one below.</td></tr>'}</tbody></table></div>
-      <div class="row" style="margin-top:12px">
-        <div><label>Name</label><input id="nName" placeholder="e.g. Sarah Khan"></div>
-        <div><label>Email</label><input id="nEmail" type="email" placeholder="optional"></div>
-        <div><label>Account</label><select id="nType"><option value="personal">Personal Google Voice</option><option value="workspace">Google Workspace Voice</option></select></div>
-        <div><button class="btn" id="addAgent">Add agent &amp; create token</button></div>
-      </div>
-      <div id="tokenOut"></div>
-    </div>
+  // ---- credentials card (shown once) ----
+  const showCreds = ({ email, name, role, password, token }) => {
+    const msg = [
+      `Coco Voice dashboard: ${location.origin}`,
+      `Email: ${email}`,
+      `Temporary password: ${password}`,
+      ...(token ? [`Extension token: ${token}`, 'Extension: click the Coco icon → Settings → paste token → Connect.'] : []),
+      'You will be asked to choose your own password at first sign-in.',
+    ].join('\n');
+    $('#credOut').innerHTML = `
+      <div class="card token-card">
+        <h3>${esc(name || email)} · ${esc(ROLE_LABEL[role] || role)}</h3>
+        <p class="small">Shown only once. Send it to the person privately (not in a group chat).</p>
+        <label>Email</label><div class="token-row"><div class="token">${esc(email)}</div></div>
+        <label>Temporary password</label><div class="token-row"><div class="token">${esc(password)}</div><button class="btn" id="cpPw">Copy</button></div>
+        ${token ? `<label>Extension token</label><div class="token-row"><div class="token">${esc(token)}</div><button class="btn" id="cpTok">Copy</button></div>` : ''}
+        <button class="btn dark" id="cpAll" style="margin-top:8px">Copy all as a message</button>
+      </div>`;
+    copyBtn('cpPw', password);
+    if (token) copyBtn('cpTok', token);
+    copyBtn('cpAll', msg);
+    $('#credOut').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
 
-    <div class="card"><h3>Dashboard users</h3>
-      <p class="small">The person must open this dashboard and sign in once first. Only managers and admins can read message transcripts.</p>
-      <table><tbody>${(users || []).map((u) => `<tr><td>${esc(u.email)}</td><td>${esc(u.role)}</td><td>${esc(state.agents.find((a) => a.id === u.agent_id)?.name || '')}</td></tr>`).join('')}</tbody></table>
-      <div class="row" style="margin-top:12px">
-        <div><label>Email</label><input id="uEmail" type="email"></div>
-        <div><label>Role</label><select id="uRole"><option value="agent">Agent (own numbers, no transcripts)</option><option value="manager">Manager (everything + transcripts)</option><option value="admin">Admin</option></select></div>
-        <div><label>Linked agent</label><select id="uAgent"><option value="">—</option>${(agents || []).map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></div>
-        <div><button class="btn" id="setRole">Save user</button></div>
-      </div>
-    </div>`;
+  const syncAgentRow = () => { $('#cAgentRow').hidden = $('#cRole').value !== 'agent'; $('#cType').disabled = $('#cAgentMode').value !== 'new'; };
+  $('#cRole').addEventListener('change', syncAgentRow);
+  $('#cAgentMode').addEventListener('change', syncAgentRow);
+  syncAgentRow();
 
-  $('#saveSettings').addEventListener('click', async () => {
+  $('#createUser').addEventListener('click', async (e) => {
+    const email = $('#cEmail').value.trim();
+    const name = $('#cName').value.trim();
+    const role = $('#cRole').value;
+    const mode = $('#cAgentMode').value;
+    if (!/^\S+@\S+\.\S+$/.test(email)) return toast('Enter a valid email');
+    e.target.disabled = true;
+    try {
+      const r = await team({
+        action: 'create', email, name, role,
+        agent_id: role === 'agent' && !['new', 'none'].includes(mode) ? mode : null,
+        create_agent: role === 'agent' && mode === 'new',
+        account_type: $('#cType').value,
+      });
+      await renderSettings(view);
+      showCreds({ email, name, role, password: r.temp_password, token: r.agent_token });
+    } catch (err) { toast(err.message); e.target.disabled = false; }
+  });
+
+  view.querySelectorAll('tr[data-uid]').forEach((tr) => {
+    const uid = tr.dataset.uid;
+    const email = tr.dataset.email;
+    $('.uSave', tr)?.addEventListener('click', async () => {
+      try { await team({ action: 'set_role', user_id: uid, role: $('.uRoleSel', tr).value, agent_id: $('.uAgentSel', tr).value || null }); toast('Saved'); } catch (err) { toast(err.message); }
+    });
+    $('.uReset', tr)?.addEventListener('click', async () => {
+      if (!confirm(`Reset the password for ${email}? Their current password stops working.`)) return;
+      try {
+        const r = await team({ action: 'reset_password', user_id: uid });
+        showCreds({ email, name: '', role: $('.uRoleSel', tr)?.value || 'agent', password: r.temp_password });
+      } catch (err) { toast(err.message); }
+    });
+    $('.uRemove', tr)?.addEventListener('click', async () => {
+      if (!confirm(`Remove ${email}? They can no longer sign in. Their tracked activity stays in reports.`)) return;
+      try { await team({ action: 'remove', user_id: uid }); toast('User removed'); renderSettings(view); } catch (err) { toast(err.message); }
+    });
+  });
+
+  $('#saveSettings')?.addEventListener('click', async () => {
     const upd = {
       business_timezone: $('#sTz').value, analysis_mode: $('#sMode').value, analysis_time: $('#sTime').value,
       analysis_weekday: Number($('#sDay').value), analysis_model: $('#sModel').value.trim(), coaching_model: $('#sCoach').value.trim(),
@@ -621,16 +741,14 @@ async function renderSettings(view) {
       <div class="card token-card">
         <h3>Token for ${esc(name)}</h3>
         <p class="small">Copy it now — it is shown only once. Send it to the agent privately (not in a group chat).</p>
-        <div class="token-row"><div class="token" id="tokVal">${esc(token)}</div><button class="btn" id="tokCopy">Copy</button></div>
+        <div class="token-row"><div class="token">${esc(token)}</div><button class="btn" id="tokCopy">Copy</button></div>
         <ol class="small">
           <li>Agent installs the Coco Voice extension in Chrome.</li>
           <li>Clicks the extension → <b>Settings</b> → pastes the token → <b>Connect</b>. It shows "Connected as ${esc(name)}".</li>
           <li>Keeps a Google Voice tab open (pinned). Status here turns green within a few minutes.</li>
         </ol>
       </div>`;
-    $('#tokCopy').addEventListener('click', async () => {
-      try { await navigator.clipboard.writeText(token); $('#tokCopy').textContent = 'Copied ✓'; } catch { toast('Select the token and copy it manually'); }
-    });
+    copyBtn('tokCopy', token);
     $('#tokenOut').scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
   $('#addAgent').addEventListener('click', async () => {
@@ -651,13 +769,6 @@ async function renderSettings(view) {
       if (!confirm('Generate a new token? The old one stops working immediately.')) return;
       try { showToken($('.aName', tr).value, await rpc('rotate_agent_token', { p_agent: id })); } catch (e) { toast(e.message); }
     });
-  });
-  $('#setRole').addEventListener('click', async () => {
-    try {
-      await rpc('set_user_role', { p_email: $('#uEmail').value.trim(), p_role: $('#uRole').value, p_agent: $('#uAgent').value || null });
-      toast('User saved');
-      renderSettings(view);
-    } catch (e) { toast(e.message); }
   });
 }
 

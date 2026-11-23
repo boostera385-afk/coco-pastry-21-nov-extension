@@ -21,7 +21,11 @@ docs/        plan, architecture, Claude analysis handoff (Ibraheem), dashboard s
    - Open it, sign in once, then make yourself admin in the SQL editor:
      `insert into profiles (user_id, role) select id, 'admin' from auth.users where email = 'you@company.com';`
    - Settings → pick the business timezone and the Claude analysis schedule → add agents (copy each token, shown once).
-3. **Each agent** (token is the only setup)
+3. **Team logins** (no email needed)
+   - Dashboard → Settings (admins) / Team (managers) → **Create user**: name, email, role → shows a temporary password once (+ the extension token for agents). User must pick their own password at first sign-in.
+   - Admins: any role, change roles, reset passwords, remove users. Managers: agent users only.
+   - Server side: `supabase/functions/team` (service key never reaches the browser). Deploy: `supabase functions deploy team`.
+4. **Each agent** (token is the only setup)
    - Admin: dashboard → Settings → Agents → **Add agent & create token** → copy and send it privately.
    - Agent: `chrome://extensions` → Developer mode → **Load unpacked** → choose the `extension/` folder (not the whole project).
    - Click the Coco icon → **Settings** → paste token → **Connect** → shows "Connected as <name>".
