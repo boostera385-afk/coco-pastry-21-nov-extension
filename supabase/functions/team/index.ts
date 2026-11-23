@@ -101,6 +101,32 @@ Deno.serve(async (req) => {
       return json({ ok: true, temp_password: password });
     }
 
+    if (action === 'set_active') {
+      // suspend = block sign-in (Supabase ban), keep the account and all history; reactivate = lift the ban
+      const userId = String(body.user_id ?? '');
+      if (!notSelf(userId)) return json({ error: "You can't suspend yourself." }, 400);
+      const active = body.active !== false;
+      const { error } = await admin.auth.admin.updateUserById(userId, { ban_duration: active ? 'none' : '876000h' });
+      if (error) return json({ error: error.message }, 400);
+      return json({ ok: true, active });
+    }
+
+    if (action === 'delete_agent') {
+      // permanently deletes a tracking agent, ALL its calls/texts/analysis (cascade) and its saved recordings
+      const agentId = String(body.agent_id ?? '');
+      const { data: ag } = await admin.from('agents').select('id, name').eq('id', agentId).maybeSingle();
+      if (!ag) return json({ error: 'Agent not found.' }, 404);
+      if (String(body.confirm_name ?? '') !== ag.name) return json({ error: 'Type the agent name exactly to confirm.' }, 400);
+      for (let i = 0; i < 50; i++) {
+        const { data: files } = await admin.storage.from('recordings').list(agentId, { limit: 100 });
+        if (!files?.length) break;
+        await admin.storage.from('recordings').remove(files.map((f) => `${agentId}/${f.name}`));
+      }
+      const { error } = await admin.from('agents').delete().eq('id', agentId);
+      if (error) return json({ error: error.message }, 400);
+      return json({ ok: true });
+    }
+
     if (action === 'remove') {
       const userId = String(body.user_id ?? '');
       if (!notSelf(userId)) return json({ error: 'You can\'t remove yourself.' }, 400);

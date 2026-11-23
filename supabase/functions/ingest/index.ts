@@ -32,7 +32,8 @@ Deno.serve(async (req) => {
   const { data: agent, error: agentErr } = await supabase
     .from('agents').select('id, active, name').eq('token_hash', await sha256(token)).maybeSingle();
   if (agentErr) return json({ error: 'lookup failed' }, 500);
-  if (!agent || !agent.active) return json({ error: 'invalid or inactive token' }, 401);
+  if (!agent) return json({ error: 'invalid token' }, 401);
+  if (!agent.active) return json({ error: 'deactivated', message: 'Tracking is turned off for this agent by your admin' }, 403);
 
   // ---- audio upload: POST ?media=<gv_id>  (voicemail / call recording copied by the extension) ----
   const media = new URL(req.url).searchParams.get('media');

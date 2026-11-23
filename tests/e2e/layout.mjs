@@ -81,6 +81,14 @@ try {
       }
     }
   }
+  if (process.env.SHOTS) { // settings: users/agents + credentials panel (fake values)
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1300, height: 1500, deviceScaleFactor: 1, mobile: false }, s);
+    await cdp.eval(s, "location.hash = '#/settings'; true"); await sleep(3000);
+    await cdp.eval(s, `window.__coco.credentialsPanel(document.getElementById('credOut'), { title: 'New user created', name: 'Sarah Khan', email: 'sarah@example.com', role: 'agent', password: 'Ab3dEf6hJk9m', token: 'coco_' + '0'.repeat(48) }); window.scrollTo(0, 0); true`);
+    await sleep(800);
+    const { data } = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }, s);
+    fs.writeFileSync(path.join(process.env.SHOTS, 'settings.png'), Buffer.from(data, 'base64'));
+  }
   if (process.env.SHOTS) { // contact detail view
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1300, height: 1100, deviceScaleFactor: 1, mobile: false }, s);
     await cdp.eval(s, "location.hash = '#/conversations'; true"); await sleep(2500);

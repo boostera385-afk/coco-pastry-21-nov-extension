@@ -1,12 +1,19 @@
 {
-  "version": "0.7.1",
-  "released": "2026-11-23T12:05:44.575Z",
+  "version": "0.7.2",
+  "released": "2026-11-23T12:27:02.409Z",
   "download": "/downloads/coco-voice-extension.zip",
-  "versioned": "/downloads/coco-voice-extension-0.7.1.zip",
-  "size": 40207,
-  "sha256": "11d486b773c907213bb8db8acf72ea692077591546faa278beacf946a9632a15",
+  "versioned": "/downloads/coco-voice-extension-0.7.2.zip",
+  "size": 40236,
+  "sha256": "5262226eb62587a9cb0c70d127c55de2002f0a20a96d8f80405ebb23f5edb78d",
   "min_chrome": "116",
   "history": [
+    {
+      "version": "0.7.2",
+      "released": "2026-11-23T12:27:02.409Z",
+      "notes": [
+        "Clear message when your admin turns tracking off for your agent"
+      ]
+    },
     {
       "version": "0.7.1",
       "released": "2026-11-23T12:05:44.575Z",

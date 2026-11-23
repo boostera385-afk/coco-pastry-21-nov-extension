@@ -793,8 +793,79 @@ function slackMessage({ name, email, role, password, token }) {
   return lines.join('\n');
 }
 
+// ---------- credentials hand-off (new user / password reset / new token) ----------
+/** Plain-text version (email, download, print). */
+function plainMessage({ name, email, role, password, token }) {
+  const L = [`Hello ${name || (email || '').split('@')[0] || ''},`.replace(/,\s*$/, ',').replace('Hello ,', 'Hello,'), '',
+    'Your Coco Voice access is ready.', ''];
+  let step = 0;
+  if (email) {
+    L.push(`${++step}. Sign in to the dashboard`, `   ${location.origin}`, `   Email: ${email}`);
+    if (password) L.push(`   Temporary password: ${password}`, '   (you will choose your own password at first sign-in)');
+    L.push('');
+  }
+  if (token || role === 'agent') {
+    L.push(`${++step}. Install the Chrome extension`,
+      `   Download: ${state.ext ? extUrl(state.ext.download) : `${location.origin}/#/extension`}${state.ext ? ` (v${state.ext.version})` : ''}`,
+      '   Unzip -> chrome://extensions -> Developer mode -> Load unpacked -> choose the coco-voice-extension folder',
+      '   Click the Coco icon -> Settings -> paste your token -> Connect');
+    if (token) L.push(`   Token: ${token}`);
+    L.push('', `${++step}. Start tracking`,
+      '   Open Google Voice (business account) and keep the tab open (shortcut Alt+Shift+V).',
+      '   Every call and text counts from the moment you connect (Pakistan time).', '');
+  }
+  L.push('Please keep these details private.', '', '— Pastry Marketing · Coco Voice');
+  return L.join('\n');
+}
+
+/** One professional panel for every hand-off: Slack, email, download, print. Shown once. */
+function credentialsPanel(target, { title, name, email, role, password, token, rotated = false }) {
+  const slack = slackMessage({ name, email, role, password, token });
+  const plain = plainMessage({ name, email, role, password, token });
+  const subject = 'Your Coco Voice access';
+  const file = `coco-voice-${(name || email || 'agent').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}.txt`;
+  const field = (label, value, id) => `<label>${label}</label><div class="token-row"><div class="token">${esc(value)}</div><button class="btn" id="${id}">Copy</button></div>`;
+  target.innerHTML = `
+    <div class="card token-card creds">
+      <div class="creds-head">
+        <div><h3 style="margin:0">${esc(title)}</h3>
+          <div class="small muted">${esc(name || '')}${email ? ` · ${esc(email)}` : ''} · ${esc(ROLE_LABEL[role] || role || 'Agent')}</div></div>
+        <span class="badge medium">Shown once</span>
+      </div>
+      <p class="small">Send privately — Slack <b>direct message</b> or email to the person only, never a shared channel.
+        ${password ? 'They choose their own password at first sign-in.' : ''}${rotated ? ' The previous token has stopped working.' : ''}</p>
+      ${email ? field('Email', email, 'cpEmail') : ''}
+      ${password ? field('Temporary password', password, 'cpPw') : ''}
+      ${token ? field('Extension token', token, 'cpTok') : ''}
+      <div class="send-row">
+        <button class="btn" id="cpSlack">Copy for Slack</button>
+        ${email ? `<a class="btn dark" id="mailBtn" href="mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(plain)}">Email it</a>` : ''}
+        <button class="btn dark" id="dlBtn">Download (.txt)</button>
+        <button class="btn dark" id="prBtn">Print</button>
+      </div>
+      <details style="margin-top:10px"><summary class="small">Preview message</summary><pre class="slack-preview">${esc(slack)}</pre></details>
+    </div>`;
+  if (email) copyBtn('cpEmail', email);
+  if (password) copyBtn('cpPw', password);
+  if (token) copyBtn('cpTok', token);
+  copyBtn('cpSlack', slack);
+  $('#dlBtn').addEventListener('click', () => {
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([plain], { type: 'text/plain' })), download: file });
+    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  });
+  $('#prBtn').addEventListener('click', () => {
+    const w = window.open('', '_blank', 'noopener=no,width=720,height=800');
+    if (!w) return toast('Allow pop-ups to print');
+    w.document.write(`<!doctype html><title>${esc(subject)}</title><style>body{font:14px/1.6 system-ui,sans-serif;margin:40px;color:#111}
+      h1{font-size:20px;margin:0 0 4px}.by{color:#666;margin:0 0 24px}pre{white-space:pre-wrap;font:14px/1.6 ui-monospace,monospace;border:1px solid #ddd;padding:16px;border-radius:8px}</style>
+      <h1>Coco Voice — access details</h1><p class="by">Pastry Marketing · confidential</p><pre>${esc(plain)}</pre>`);
+    w.document.close(); w.focus(); w.print();
+  });
+  target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
 // exposed for the end-to-end test only (no secrets)
-window.__coco = { slackMessage };
+window.__coco = { slackMessage, plainMessage, credentialsPanel };
 
 // ---------- account (everyone) ----------
 async function renderAccount(view) {
@@ -882,14 +953,16 @@ async function renderSettings(view) {
       <p class="small"><b>Admin</b> sees everything (all agents, contacts, conversations). <b>Agent</b> sees only their own numbers — no other agents, no message text.
       Create logins here — no email needed: each new user gets a temporary password (shown once) and must choose their own password at first sign-in.</p>
       <div class="table-wrap"><table>
-        <thead><tr><th>User</th><th>Role</th><th>Tracking agent</th><th>Last sign-in</th><th></th></tr></thead>
+        <thead><tr><th>User</th><th>Role</th><th>Tracking agent</th><th>Status</th><th>Last sign-in</th><th></th></tr></thead>
         <tbody>${(users || []).map((u) => `<tr data-uid="${u.user_id}" data-email="${esc(u.email)}">
           <td>${esc(u.name || '')}<div class="small muted">${esc(u.email)}${isMe(u) ? ' · you' : ''}</div></td>
           <td>${isMe(u) ? 'Admin' : `<select class="uRoleSel">${opt('agent', u.role === 'admin' ? 'admin' : 'agent', 'Agent')}${opt('admin', u.role === 'admin' ? 'admin' : 'agent', 'Admin')}</select>`}</td>
           <td>${isMe(u) ? '—' : `<select class="uAgentSel"><option value="">—</option>${(agents || []).map((a) => opt(a.id, u.agent_id, a.name)).join('')}</select>`}</td>
+          <td>${u.suspended ? '<span class="badge high">Suspended</span>' : '<span class="badge good">Active</span>'}</td>
           <td>${u.last_sign_in_at ? ago(u.last_sign_in_at) : '<span class="small muted">never</span>'}${u.must_change_password ? '<div class="small muted">temporary password</div>' : ''}</td>
-          <td style="white-space:nowrap">${isMe(u) ? '' : '<button class="btn dark uSave">Save</button> <button class="btn dark uReset">Reset password</button> <button class="btn dark uRemove">Remove</button>'}</td>
-        </tr>`).join('') || '<tr><td colspan="5" class="empty">No users yet</td></tr>'}</tbody>
+          <td style="white-space:nowrap">${isMe(u) ? '' : `<button class="btn dark uSave">Save</button> <button class="btn dark uReset">Reset password</button>
+            <button class="btn dark uActive" data-active="${u.suspended ? '0' : '1'}">${u.suspended ? 'Reactivate' : 'Suspend'}</button> <button class="btn danger uRemove">Delete</button>`}</td>
+        </tr>`).join('') || '<tr><td colspan="6" class="empty">No users yet</td></tr>'}</tbody>
       </table></div>
 
       <h3 style="margin-top:18px;font-size:16px">Create user</h3>
@@ -912,15 +985,15 @@ async function renderSettings(view) {
     <div class="card"><h3>Agents (Google Voice business numbers)</h3>
       <p class="small">One agent = one person / Voice number. The agent pastes their token into the Coco Voice extension (Settings → Connect) — no other setup.
       Tracking starts the moment they connect (no old history). Tokens are shown once and stored only as a hash; use <b>New token</b> if one is lost or a laptop changes hands.</p>
-      <div class="table-wrap"><table><thead><tr><th>Name</th><th>Extension</th><th>Voice number</th><th>Token</th><th>Tracking since</th><th>Active</th><th></th></tr></thead>
+      <div class="table-wrap"><table><thead><tr><th>Name</th><th>Extension</th><th>Voice number</th><th>Token</th><th>Tracking since</th><th>Status</th><th></th></tr></thead>
       <tbody>${(agents || []).map((a) => `<tr data-id="${a.id}">
         <td><input class="aName" value="${esc(a.name)}"><div class="small muted">${esc(a.email || '')}</div></td>
         <td>${connBadge(a)}</td>
         <td>${esc(a.gv_number || 'detected on first sync')}</td>
         <td class="small">${a.token_hint ? `…${esc(a.token_hint)}` : '—'}</td>
         <td>${a.tracking_start ? fmtTime(a.tracking_start) : 'when connected'}</td>
-        <td><input type="checkbox" class="aActive" ${a.active ? 'checked' : ''} style="width:auto"></td>
-        <td style="white-space:nowrap"><button class="btn dark aSave">Save</button> <button class="btn dark aRotate">New token</button> <button class="btn dark aDiag">Diagnostics</button></td></tr>
+        <td><button class="switch aActive" role="switch" aria-checked="${a.active}" title="${a.active ? 'Tracking allowed — click to deactivate' : 'Deactivated — click to activate'}"><i></i>${a.active ? 'Active' : 'Inactive'}</button></td>
+        <td style="white-space:nowrap"><button class="btn dark aSave">Save name</button> <button class="btn dark aRotate">New token</button> <button class="btn dark aDiag">Diagnostics</button> <button class="btn danger aDelete">Delete</button></td></tr>
         <tr class="diag" data-for="${a.id}" hidden><td colspan="7">${diagHtml(a)}</td></tr>`).join('') || '<tr><td colspan="7" class="empty">No agents yet — create an Agent user above, or add a tracking-only agent below.</td></tr>'}</tbody></table></div>
       <div class="row" style="margin-top:12px">
         <div><label>Name</label><input id="nName" placeholder="tracking-only agent (no login)"></div>
@@ -964,24 +1037,8 @@ async function renderSettings(view) {
       <div class="row"><div><button class="btn" id="saveSettings">Save</button></div></div>
     </div>`;
 
-  // ---- credentials card (shown once) ----
-  const showCreds = ({ email, name, role, password, token }) => {
-    const msg = slackMessage({ name, email, role, password, token });
-    $('#credOut').innerHTML = `
-      <div class="card token-card">
-        <h3>${esc(name || email)} · ${esc(ROLE_LABEL[role] || role)}</h3>
-        <p class="small">Shown only once. Send it to the person privately — a Slack <b>direct message</b>, not a channel.</p>
-        <label>Email</label><div class="token-row"><div class="token">${esc(email)}</div></div>
-        <label>Temporary password</label><div class="token-row"><div class="token">${esc(password)}</div><button class="btn" id="cpPw">Copy</button></div>
-        ${token ? `<label>Extension token</label><div class="token-row"><div class="token">${esc(token)}</div><button class="btn" id="cpTok">Copy</button></div>` : ''}
-        <label>Message preview (Slack formatting)</label><pre class="slack-preview">${esc(msg)}</pre>
-        <button class="btn" id="cpAll" style="margin-top:8px">Copy message for Slack</button>
-      </div>`;
-    copyBtn('cpPw', password);
-    if (token) copyBtn('cpTok', token);
-    copyBtn('cpAll', msg);
-    $('#credOut').scrollIntoView({ behavior: 'smooth', block: 'center' });
-  };
+  const showCreds = ({ email, name, role, password, token }) =>
+    credentialsPanel($('#credOut'), { title: 'New user created', name, email, role, password, token });
 
   const syncAgentRow = () => { $('#cAgentRow').hidden = $('#cRole').value !== 'agent'; };
   $('#cRole').addEventListener('change', syncAgentRow);
@@ -1011,12 +1068,17 @@ async function renderSettings(view) {
       if (!confirm(`Reset the password for ${email}? Their current password stops working.`)) return;
       try {
         const r = await team({ action: 'reset_password', user_id: uid });
-        showCreds({ email, name: '', role: $('.uRoleSel', tr)?.value || 'agent', password: r.temp_password });
+        credentialsPanel($('#credOut'), { title: 'New temporary password', name: tr.querySelector('td')?.firstChild?.textContent?.trim() || '', email, role: $('.uRoleSel', tr)?.value || 'agent', password: r.temp_password });
       } catch (err) { toast(err.message); }
     });
+    $('.uActive', tr)?.addEventListener('click', async (e) => {
+      const suspend = e.target.dataset.active === '1';
+      if (suspend && !confirm(`Suspend ${email}? They can't sign in until you reactivate them. Nothing is deleted.`)) return;
+      try { await team({ action: 'set_active', user_id: uid, active: !suspend }); toast(suspend ? 'User suspended' : 'User reactivated'); renderSettings(view); } catch (err) { toast(err.message); }
+    });
     $('.uRemove', tr)?.addEventListener('click', async () => {
-      if (!confirm(`Remove ${email}? They can no longer sign in. Their tracked activity stays in reports.`)) return;
-      try { await team({ action: 'remove', user_id: uid }); toast('User removed'); renderSettings(view); } catch (err) { toast(err.message); }
+      if (!confirm(`Delete the login ${email}? This can't be undone. Their tracked calls and texts stay in reports (delete the agent below to remove those).`)) return;
+      try { await team({ action: 'remove', user_id: uid }); toast('User deleted'); renderSettings(view); } catch (err) { toast(err.message); }
     });
   });
 
@@ -1036,22 +1098,8 @@ async function renderSettings(view) {
     $('#tzLabel').textContent = `${TZ_NAMES[tz()] || tz()} time`;
     toast('Settings saved');
   });
-  const showToken = (name, token) => {
-    $('#tokenOut').innerHTML = `
-      <div class="card token-card">
-        <h3>Token for ${esc(name)}</h3>
-        <p class="small">Copy it now — it is shown only once. Send it to the agent privately (not in a group chat).</p>
-        <div class="token-row"><div class="token">${esc(token)}</div><button class="btn" id="tokCopy">Copy</button><button class="btn dark" id="tokSlack">Copy message for Slack</button></div>
-        <ol class="small">
-          <li>Agent installs the Coco Voice extension in Chrome.</li>
-          <li>Clicks the extension → <b>Settings</b> → pastes the token → <b>Connect</b>. It shows "Connected as ${esc(name)}". Tracking starts now.</li>
-          <li>Keeps the Google Voice (business account) tab open. Status here turns green within a few minutes.</li>
-        </ol>
-      </div>`;
-    copyBtn('tokCopy', token);
-    copyBtn('tokSlack', slackMessage({ name, role: 'agent', token }));
-    $('#tokenOut').scrollIntoView({ behavior: 'smooth', block: 'center' });
-  };
+  const showToken = (name, token, rotated = false) =>
+    credentialsPanel($('#tokenOut'), { title: rotated ? 'Replacement extension token' : 'New agent token', name, role: 'agent', token, rotated });
   $('#addAgent').addEventListener('click', async () => {
     const name = $('#nName').value.trim();
     if (!name) return toast('Name is required');
@@ -1064,12 +1112,29 @@ async function renderSettings(view) {
   view.querySelectorAll('tr[data-id]').forEach((tr) => {
     const id = tr.dataset.id;
     $('.aSave', tr).addEventListener('click', async () => {
-      try { await rpc('update_agent', { p_agent: id, p_name: $('.aName', tr).value, p_account_type: 'workspace', p_active: $('.aActive', tr).checked }); toast('Saved'); } catch (e) { toast(e.message); }
+      try { await rpc('update_agent', { p_agent: id, p_name: $('.aName', tr).value, p_account_type: 'workspace', p_active: $('.aActive', tr).getAttribute('aria-checked') === 'true' }); toast('Saved'); } catch (e) { toast(e.message); }
+    });
+    $('.aActive', tr).addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      const on = btn.getAttribute('aria-checked') !== 'true';
+      if (!on && !confirm(`Deactivate ${$('.aName', tr).value}? Their extension stops tracking right away ("turned off by your admin"). Existing data stays.`)) return;
+      try {
+        await rpc('update_agent', { p_agent: id, p_name: $('.aName', tr).value, p_account_type: 'workspace', p_active: on });
+        btn.setAttribute('aria-checked', String(on)); btn.lastChild.textContent = on ? 'Active' : 'Inactive';
+        toast(on ? 'Agent activated' : 'Agent deactivated');
+      } catch (err) { toast(err.message); }
+    });
+    $('.aDelete', tr).addEventListener('click', async () => {
+      const name = $('.aName', tr).defaultValue;
+      const typed = prompt(`Delete agent "${name}" permanently?\n\nThis removes ALL their calls, texts, voicemails, recordings and analysis. It can't be undone.\nTip: use Inactive instead to keep the history.\n\nType the agent name to confirm:`);
+      if (typed === null) return;
+      if (typed !== name) return toast('Name did not match — nothing deleted');
+      try { await team({ action: 'delete_agent', agent_id: id, confirm_name: typed }); toast('Agent deleted'); renderSettings(view); } catch (err) { toast(err.message); }
     });
     $('.aDiag', tr).addEventListener('click', () => { const d = view.querySelector(`tr.diag[data-for="${id}"]`); d.hidden = !d.hidden; });
     $('.aRotate', tr).addEventListener('click', async () => {
       if (!confirm('Generate a new token? The old one stops working immediately.')) return;
-      try { showToken($('.aName', tr).value, await rpc('rotate_agent_token', { p_agent: id })); } catch (e) { toast(e.message); }
+      try { showToken($('.aName', tr).value, await rpc('rotate_agent_token', { p_agent: id }), true); } catch (e) { toast(e.message); }
     });
   });
 }

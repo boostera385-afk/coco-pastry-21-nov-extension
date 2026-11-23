@@ -55,6 +55,29 @@ try {
   const rs = await call(a.jwt, { action: 'reset_password', user_id: c.user_id });
   ok(rs.ok && rs.temp_password && rs.temp_password !== c.temp_password, 'admin resets an agent password');
   ok((await call(a.jwt, { action: 'set_role', user_id: c2.user_id, role: 'agent' })).ok, 'admin changes a role (admin -> agent)');
+  // suspend / reactivate a login (nothing deleted)
+  ok((await call(a.jwt, { action: 'set_active', user_id: a.id, active: false })).status === 400, 'admin cannot suspend themselves');
+  const sus = await call(a.jwt, { action: 'set_active', user_id: c.user_id, active: false });
+  const blocked = await signIn(agentEmail, rs.temp_password);
+  const [lu] = await sql(`select coalesce(banned_until > now(), false) s from auth.users where id='${c.user_id}'`);
+  ok(sus.ok && !blocked.access_token && lu?.s === true, 'suspended user cannot sign in', JSON.stringify(blocked).slice(0, 120));
+  await call(a.jwt, { action: 'set_active', user_id: c.user_id, active: true });
+  ok(!!(await signIn(agentEmail, rs.temp_password)).access_token, 'reactivated user can sign in again');
+
+  // deactivated agent: extension gets a clear 403 "turned off by your admin"
+  await sql("update agents set active = false where name = 'E2E Agent'");
+  const off = await fetch(`${URL_}/functions/v1/ingest`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-agent-token': c.agent_token }, body: JSON.stringify({ events: [] }) });
+  ok(off.status === 403 && (await off.json()).error === 'deactivated', 'deactivated agent: extension told "turned off by your admin" (403)');
+  await sql("update agents set active = true where name = 'E2E Agent'");
+
+  // delete agent needs the exact name; removes the agent and its data
+  const [{ id: agId }] = await sql("select id from agents where name = 'E2E Agent'");
+  ok((await call(a.jwt, { action: 'delete_agent', agent_id: agId, confirm_name: 'wrong' })).status === 400, 'delete agent refused without the exact name');
+  ok((await call(g.jwt, { action: 'delete_agent', agent_id: agId, confirm_name: 'E2E Agent' })).status === 403, 'agent-role user cannot delete agents');
+  const del = await call(a.jwt, { action: 'delete_agent', agent_id: agId, confirm_name: 'E2E Agent' });
+  const [gone] = await sql(`select count(*)::int n from agents where id='${agId}'`);
+  ok(del.ok && gone.n === 0, 'admin deletes an agent (typed name confirmed)');
+
   const rm = await call(a.jwt, { action: 'remove', user_id: c.user_id });
   ok(rm.ok, 'admin removes a user');
   if (rm.ok) made.splice(made.indexOf(c.user_id), 1);

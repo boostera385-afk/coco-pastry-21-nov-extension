@@ -459,6 +459,7 @@ async function sync() {
         signal: AbortSignal.timeout(30000),
       });
       if (res.status === 401) throw new Error('Token rejected — ask your manager for a new token');
+      if (res.status === 403) throw new Error('Tracking turned off by your admin (agent deactivated)');
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       const out = await res.json();
       if (out.agent?.name) await set({ agentName: out.agent.name });
