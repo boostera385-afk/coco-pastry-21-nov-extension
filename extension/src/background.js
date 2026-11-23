@@ -346,7 +346,7 @@ async function uploadMedia() {
         });
         const out = await u.json().catch(() => ({}));
         if (!u.ok) throw new Error(out.error || `upload ${u.status}`);
-        if (!out.attached) throw new Error('event not synced yet');
+        if (!out.attached && !out.skipped) throw new Error('event not synced yet');
         done[m.id] = Date.now();
       } catch (e) {
         if (m.tries < 6) failed.push({ ...m, tries: m.tries + 1, error: String(e.message || e).slice(0, 80) });

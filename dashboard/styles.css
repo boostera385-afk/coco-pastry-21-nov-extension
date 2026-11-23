@@ -122,3 +122,5 @@ table.wrap td { white-space: normal; overflow-wrap: anywhere; }
 .callrow .ci svg { width: 16px; height: 16px; }
 .badge.good { background: var(--green); border-color: var(--green); color: #fff; }
 audio.rec { width: 100%; max-width: 320px; height: 32px; margin-top: 6px; }
+.note { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line); border-left: 3px solid var(--yellow); border-radius: 8px; background: var(--surface-2); line-height: 1.5; }
+.check { display: flex; gap: 8px; align-items: center; text-transform: none; letter-spacing: 0; font-size: 14px; }

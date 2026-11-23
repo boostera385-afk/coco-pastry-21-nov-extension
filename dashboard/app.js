@@ -753,6 +753,17 @@ async function renderSettings(view) {
         <div><label>Keep data (days)</label><input id="sRet" type="number" min="30" value="${s.retention_days}"></div>
         <div><label>Claude analysis</label><input value="On hold" disabled></div>
       </div>
+      <h3 style="margin-top:18px;font-size:16px">Call recordings &amp; voicemails</h3>
+      <div class="row" style="align-items:center">
+        <div><label class="check"><input type="checkbox" id="sRec" ${s.save_recordings !== false ? 'checked' : ''} style="width:auto"> Save voicemail and call-recording audio in this dashboard</label>
+          <div class="small muted">On: the extension copies the audio to private storage that only admins can play (Conversations). Off: nothing new is stored; Google Voice keeps its own copy.</div></div>
+      </div>
+      <div class="note small">
+        <b>Recording live calls is switched on in Google, not here.</b> A Google Workspace admin opens
+        <a href="https://admin.google.com" target="_blank" rel="noopener">Google Admin</a> → Apps → Google Workspace → Google Voice → <b>Call recording</b>
+        (on-demand or automatic, per organisational unit). Google announces the recording to the caller (consent) and saves the audio with a transcript;
+        the extension then picks it up like a voicemail. Coco never records audio itself.
+      </div>
       <h3 style="margin-top:18px;font-size:16px">Analysis rules</h3>
       <div class="row">
         <div><label>Reply to texts within (min)</label><input id="rReply" type="number" min="1" value="${s.analysis_rules?.reply_target_min ?? 15}"></div>
@@ -834,7 +845,7 @@ async function renderSettings(view) {
   $('#saveSettings').addEventListener('click', async () => {
     const num = (id, min = 1) => Math.max(min, Number($(id).value) || min);
     const upd = {
-      business_timezone: $('#sTz').value, retention_days: Number($('#sRet').value), updated_at: new Date().toISOString(),
+      business_timezone: $('#sTz').value, retention_days: Number($('#sRet').value), save_recordings: $('#sRec').checked, updated_at: new Date().toISOString(),
       analysis_rules: {
         reply_target_min: num('#rReply'), callback_target_min: num('#rCb'), followup_after_hours: num('#rFu'),
         max_unanswered_per_day: num('#rMax'), quiet_start: $('#rQs').value || '21:00', quiet_end: $('#rQe').value || '08:00',

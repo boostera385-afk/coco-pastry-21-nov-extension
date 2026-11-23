@@ -69,7 +69,13 @@ export function summarize(events, fromKey, toKey, tz = DEFAULT_TZ) {
     if (e.k === 'text' && e.d === 'out') r.outboundTexts++;
     if (e.k === 'call' && e.d === 'in') { r.inboundCalls++; if (e.o === 'missed' || e.o === 'voicemail') r.missedCalls++; }
     if (e.k === 'text' && e.d === 'in') r.inboundTexts++;
-    if (e.k === 'voicemail') r.voicemails++;
+    // Voice stores a missed call that went to voicemail ONLY as the voicemail: count it as a missed incoming
+    // call too, unless an incoming call from the same number was recorded in the 5 minutes before it
+    if (e.k === 'voicemail') {
+      r.voicemails++;
+      const already = events.some((x) => x.k === 'call' && x.d === 'in' && x.c === e.c && x.at <= e.at && e.at - x.at <= 5 * 60e3);
+      if (!already) { r.inboundCalls++; r.missedCalls++; }
+    }
     if (e.d === 'out' && (e.k === 'call' || e.k === 'text')) r.outboundTotal++;
     if (e.d === 'in') r.inboundTotal++;
     if (e.d === 'out' && e.c) reached.add(e.c);

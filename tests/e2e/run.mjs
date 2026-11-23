@@ -376,7 +376,7 @@ async function main() {
   const convItems = await waitFor(() => cdp.eval(dS, "document.querySelectorAll('#clist .item').length"), 10000);
   check('dashboard UI: conversations page lists threads', convItems >= 4, `got ${convItems}`);
   await cdp.eval(dS, "document.querySelector('#clist .item').click(); true");
-  const bubbles = await waitFor(() => cdp.eval(dS, "document.querySelectorAll('#detail .bubble, #detail .event').length"), 10000);
+  const bubbles = await waitFor(() => cdp.eval(dS, "document.querySelectorAll('#detail .bubble, #detail .callrow, #detail .event').length"), 10000);
   check('dashboard UI: opening a conversation shows the timeline', bubbles >= 1, `got ${bubbles}`);
   await cdp.eval(dS, "location.hash = '#/settings'; true");
   const settingsOk = await waitFor(() => cdp.eval(dS, "!!document.getElementById('createUser') && !!document.getElementById('saveSettings') && document.body.textContent.includes('E2E Bot')"), 10000);

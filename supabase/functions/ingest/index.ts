@@ -38,6 +38,9 @@ Deno.serve(async (req) => {
   const media = new URL(req.url).searchParams.get('media');
   if (media !== null) {
     if (!/^[A-Za-z0-9_.-]{6,80}$/.test(media)) return json({ error: 'bad media id' }, 400);
+    // admin switch (Dashboard -> Settings): when off, audio is not stored; the extension stops retrying
+    const { data: cfg } = await supabase.from('app_settings').select('save_recordings').eq('id', 1).maybeSingle();
+    if (cfg && cfg.save_recordings === false) return json({ ok: true, skipped: 'recording storage is turned off by the admin' });
     const type = (req.headers.get('content-type') ?? 'application/octet-stream').split(';')[0].trim().toLowerCase();
     if (!/^audio\/|^application\/octet-stream$/.test(type)) return json({ error: 'audio only' }, 415);
     const bytes = new Uint8Array(await req.arrayBuffer());

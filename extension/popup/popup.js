@@ -38,9 +38,6 @@ async function render() {
   $('openVoice').hidden = level !== 'warn' || !/Open Google Voice/.test(st.status?.text || '');
   $('setup').hidden = !!st.agentToken;
   $('reloadVoice').hidden = !/reload Google Voice/i.test(st.status?.text || '');
-  $('since').textContent = st.trackingStart
-    ? `Tracking since ${new Date(st.trackingStart).toLocaleString('en-US', { timeZone: tz, dateStyle: 'medium', timeStyle: 'short' })} · Pakistan time`
-    : 'Tracking starts when you connect your token.';
 
   paused = !!st.paused;
   $('pause').textContent = paused ? 'Resume' : 'Pause';

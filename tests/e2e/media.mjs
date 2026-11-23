@@ -61,7 +61,11 @@ try {
   check('agent-role user cannot get the audio', !sg.ok, String(sg.status));
   const anon = await fetch(`${URL_}/storage/v1/object/public/recordings/${agentId}/${gv}.mp3`);
   check('bucket is not public', !anon.ok);
+  await sql('update app_settings set save_recordings = false where id = 1');
+  const off = await (await fetch(`${ING}?media=${gv}`, { method: 'POST', headers: { 'x-agent-token': token, 'Content-Type': 'audio/mpeg' }, body: audio })).json();
+  check('admin switch off: audio is not stored (skipped)', !!off.skipped && !off.path, JSON.stringify(off));
 } catch (e) { check('run', false, e.stack); } finally {
+  await sql('update app_settings set save_recordings = true where id = 1').catch(() => {});
   await fetch(`${URL_}/storage/v1/object/recordings`, { method: 'DELETE', headers: { apikey: SR, Authorization: `Bearer ${SR}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ prefixes: (await (await fetch(`${URL_}/storage/v1/object/list/recordings`, { method: 'POST', headers: { apikey: SR, Authorization: `Bearer ${SR}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ prefix: agentId }) })).json()).map((o) => `${agentId}/${o.name}`) }) }).catch(() => {});
   for (const id of users) await fetch(`${URL_}/auth/v1/admin/users/${id}`, { method: 'DELETE', headers: { apikey: SR, Authorization: `Bearer ${SR}` } }).catch(() => {});
