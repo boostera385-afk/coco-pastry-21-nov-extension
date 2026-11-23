@@ -58,15 +58,23 @@ invalidateCacheOnParserChange();
 const API_RE = /voiceclient|\/voice\/v\d|\$rpc\/|batchexecute|\/v1\/voice/i;
 let netBuf = {};
 let netFlush = null;
-chrome.webRequest.onCompleted.addListener((d) => {
-  if (!d.initiator || !d.initiator.startsWith('https://voice.google.com')) return;
-  if (d.type !== 'xmlhttprequest' && d.type !== 'other' && d.type !== 'ping') return;
+// Requests may come from the page, its workers, or helper iframes (e.g. clients6 proxy) inside a Voice tab.
+const voiceTabs = new Set();
+chrome.tabs.onUpdated.addListener((id, _c, tab) => { if (tab.url?.startsWith('https://voice.google.com/')) voiceTabs.add(id); else voiceTabs.delete(id); });
+chrome.tabs.onRemoved.addListener((id) => voiceTabs.delete(id));
+chrome.tabs.query({ url: 'https://voice.google.com/*' }).then((ts) => ts.forEach((t) => voiceTabs.add(t.id))).catch(() => {});
+const SKIP_TYPES = new Set(['image', 'stylesheet', 'font', 'script', 'media', 'main_frame', 'csp_report']);
+chrome.webRequest.onBeforeRequest.addListener((d) => {
+  const fromVoice = d.initiator?.startsWith('https://voice.google.com') || voiceTabs.has(d.tabId);
+  if (!fromVoice || SKIP_TYPES.has(d.type)) return;
   let key;
   try {
     const u = new URL(d.url);
     key = `${u.host}${u.pathname.replace(/\/[A-Za-z0-9_-]{20,}/g, '/:id').replace(/\/\d+/g, '/:n')}`.slice(0, 120);
   } catch { return; }
-  const k = `${key}${d.tabId < 0 ? ' [worker]' : ''}`;
+  const via = d.initiator && !d.initiator.startsWith('https://voice.google.com') ? ` [via ${d.initiator.replace('https://', '')}]` : '';
+  const kind = d.type === 'xmlhttprequest' ? '' : ` [${d.type}]`;
+  const k = `${key}${d.tabId < 0 ? ' [worker]' : ''}${kind}${via}`;
   netBuf[k] = (netBuf[k] || 0) + 1;
   if (API_RE.test(key)) netBuf.__api = (netBuf.__api || 0) + 1;
   clearTimeout(netFlush);

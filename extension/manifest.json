@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Coco Voice Tracker",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Counts Google Voice outbound reach and inbound activity and syncs it to your team's Coco Voice dashboard.",
   "minimum_chrome_version": "116",
   "icons": {
@@ -31,22 +31,28 @@
   "content_scripts": [
     {
       "matches": [
-        "https://voice.google.com/*"
+        "https://voice.google.com/*",
+        "https://clients6.google.com/*",
+        "https://voice.clients6.google.com/*"
       ],
       "js": [
         "src/interceptor.js"
       ],
       "world": "MAIN",
-      "run_at": "document_start"
+      "run_at": "document_start",
+      "all_frames": true
     },
     {
       "matches": [
-        "https://voice.google.com/*"
+        "https://voice.google.com/*",
+        "https://clients6.google.com/*",
+        "https://voice.clients6.google.com/*"
       ],
       "js": [
         "src/content.js"
       ],
-      "run_at": "document_start"
+      "run_at": "document_start",
+      "all_frames": true
     },
     {
       "matches": [

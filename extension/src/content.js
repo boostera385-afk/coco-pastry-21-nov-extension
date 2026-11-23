@@ -16,6 +16,9 @@
   };
   window.addEventListener('message', onMessage);
 
+  // Helper iframes (e.g. Google's clients6 API proxy) only forward captures; the top page owns status.
+  if (window !== window.top) return;
+
   const beat = () => {
     if (!alive()) { clearInterval(timer); return; }
     send({ type: 'heartbeat', visible: !document.hidden });
