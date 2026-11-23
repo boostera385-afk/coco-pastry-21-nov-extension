@@ -52,6 +52,7 @@ try {
   await cdp.eval(s, `document.getElementById('email').value = ${JSON.stringify(email)}; document.getElementById('password').value = ${JSON.stringify(pw)}; document.querySelector('#pwForm button[type=submit]').click(); true`);
   if (!await waitFor(() => cdp.eval(s, "!document.getElementById('app').hidden && !!document.querySelector('.kpis')"), 20000)) throw new Error('sign-in failed');
   if (process.env.SHOTS) { // first sign-in guide
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 760, deviceScaleFactor: 1, mobile: false }, s);
     await waitFor(() => cdp.eval(s, "!!document.querySelector('dialog#setupGuide[open]')"), 5000);
     const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' }, s);
     fs.writeFileSync(path.join(process.env.SHOTS, 'guide.png'), Buffer.from(data, 'base64'));

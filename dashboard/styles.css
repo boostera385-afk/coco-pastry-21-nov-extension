@@ -136,7 +136,7 @@ ol.steps { margin: 6px 0 0; padding-left: 20px; line-height: 1.6; }
 .release ul { margin: 6px 0 0; padding-left: 20px; }
 code { font: 12px ui-monospace, monospace; background: var(--surface-2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; color: var(--text); }
 kbd { font: 600 11px var(--body); background: var(--surface-2); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; color: var(--text); }
-dialog.guide { width: min(560px, calc(100vw - 32px)); background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius); padding: 0 24px 20px; overflow: hidden; }
+dialog.guide { max-height: calc(100dvh - 32px); overflow-y: auto; width: min(560px, calc(100vw - 32px)); background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius); padding: 0 24px 20px; }
 dialog.guide::backdrop { background: rgba(0, 0, 0, .7); }
 dialog.guide .brand-stripe { margin: 0 -24px 18px; }
 dialog.guide h2 { margin: 0 0 4px; }
@@ -146,3 +146,6 @@ pre.slack-preview { white-space: pre-wrap; font: 12px/1.5 ui-monospace, monospac
 @media (max-width: 760px) { .update-banner { padding: 10px 16px; } }
 .two.top { align-items: start; }
 .ext-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+.guide-head { display: flex; gap: 12px; align-items: center; margin-bottom: 10px; }
+.guide-head img { border-radius: 10px; }
+.guide-head h2 span { color: var(--accent); }

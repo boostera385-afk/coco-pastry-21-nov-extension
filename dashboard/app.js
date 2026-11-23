@@ -742,7 +742,11 @@ function showSetupGuide(force = false) {
   d.setAttribute('aria-labelledby', 'guideTitle');
   d.innerHTML = `
     <div class="brand-stripe" aria-hidden="true"><i></i><i></i><i></i></div>
-    <h2 id="guideTitle">Welcome to Coco Voice${state.user?.email ? `, ${esc(state.user.email.split('@')[0])}` : ''}</h2>
+    <div class="guide-head">
+      <img src="icons/icon-192.png" alt="" width="48" height="48">
+      <div><h2 id="guideTitle">Welcome to Coco <span>Voice</span></h2>
+        <div class="small muted">by Pastry Marketing</div></div>
+    </div>
     <p class="small muted">${agent ? 'Four steps to start tracking your calls and texts.' : 'Four steps to get your team tracking.'}</p>
     <ol class="guide-steps">${steps.map(([t, b]) => `<li><b>${t}</b><div class="small">${b}</div></li>`).join('')}</ol>
     <div class="row" style="justify-content:flex-end">
