@@ -114,7 +114,7 @@ async function boot() {
     + state.agents.map((a) => `<option value="${a.id}">${esc(a.name)}${a.active ? '' : ' (inactive)'}</option>`).join('');
   $('#agentFilter').hidden = !isMgr();
 
-  const links = [['overview', 'Overview'], ...(isMgr() ? [['contacts', 'Contacts'], ['conversations', 'Conversations'], ['settings', 'Settings']] : []), ['account', 'Account']];
+  const links = [['overview', 'Overview'], ...(isMgr() ? [['contacts', 'Contacts'], ['conversations', 'Conversations'], ['analysis', 'Analysis'], ['settings', 'Settings']] : []), ['account', 'Account']];
   $('#navLinks').innerHTML = links.map(([k, l]) => `<a href="#/${k}" data-k="${k}">${l}</a>`).join('');
   route();
 }
@@ -241,6 +241,7 @@ async function route() {
   try {
     if (page === 'conversations' && isMgr()) await renderConversations(view, arg);
     else if (page === 'contacts' && isMgr()) await renderContacts(view);
+    else if (page === 'analysis' && isMgr()) await renderAnalysis(view);
     else if (page === 'settings' && isMgr()) await renderSettings(view);
     else if (page === 'account') await renderAccount(view);
     else await renderOverview(view);
@@ -341,6 +342,7 @@ async function renderOverview(view) {
   ]);
   const health = Object.fromEntries(healthRows.map((h) => [h.id, h.last_health]));
   const t = totals(rows);
+  const openIssues = isMgr() ? (await rpc('analysis_issues', { p_from: state.from, p_to: state.to, p_agent: agent })).filter((i) => i.status === 'open') : [];
   const period = state.from === state.to ? fmtDay(state.from) : `${fmtDay(state.from)} – ${fmtDay(state.to)}`;
   view.innerHTML = `
     <div class="section-title"><h2>${isMgr() ? 'Activity' : 'My activity'} · ${esc(period)}</h2><button class="btn dark" id="csv">Download report (CSV)</button></div>
@@ -355,7 +357,7 @@ async function renderOverview(view) {
     </div>
     <div class="two">
       <div class="card chart"><h3>Daily trend</h3>${barChart(daily)}</div>
-      <div class="card"><h3>Analysis</h3><ul class="insights">${insights(t, rows, daily).map(([c, s]) => `<li class="${c}">${esc(s)}</li>`).join('')}</ul></div>
+      <div class="card"><h3>Analysis</h3><ul class="insights">${isMgr() ? `<li class="${openIssues.some((i) => i.severity === 'high') ? 'bad' : openIssues.length ? '' : 'good'}"><a href="#/analysis">${openIssues.length ? `${n(openIssues.length)} issue${openIssues.length > 1 ? 's' : ''} to check (${n(openIssues.filter((i) => i.severity === 'high').length)} high) →` : 'No open issues — all checks passed'}</a></li>` : ''}${insights(t, rows, daily).map(([c, s]) => `<li class="${c}">${esc(s)}</li>`).join('')}</ul></div>
     </div>
     <div class="card">
       <h3>${isMgr() ? 'Agents' : 'My extension'}</h3>
@@ -416,6 +418,111 @@ async function renderContacts(view) {
   $('#ccsv').addEventListener('click', () => downloadCsv(rows, `coco-contacts-${state.from}-to-${state.to}.csv`,
     ['contact', 'contact_name', 'agent_name', 'calls_out', 'connected', 'texts_out', 'calls_in', 'missed', 'texts_in', 'voicemails', 'total', 'first_at', 'last_at']));
   await load();
+}
+
+// ---------- analysis (admin): rule-based checks from the database, reviewed by an admin ----------
+const RULES = {
+  missed_call_not_returned: { label: 'Missed call not returned', why: 'Return missed calls and voicemails quickly — customers who call usually want something now.' },
+  text_not_answered: { label: 'Text not answered', why: 'Reply to customer texts within the target time; only the first text of a burst is measured.' },
+  opt_out_ignored: { label: 'Opt-out ignored', why: 'If a customer texts STOP / unsubscribe / "don\'t text me", never contact them again (compliance).' },
+  over_contacting: { label: 'Over-contacting', why: 'Too many attempts in one day without any reply feels like spam — space them out.' },
+  no_follow_up: { label: 'No follow-up', why: 'A single unanswered attempt is rarely enough — follow up after the set hours.' },
+  quiet_hours: { label: 'Quiet hours', why: 'Don\'t call or text customers late at night or early morning in their timezone.' },
+  very_short_call: { label: 'Very short call', why: 'Connected calls that end in a few seconds usually mean a hang-up — check the opener.' },
+};
+const SEV_ORDER = { high: 0, medium: 1, low: 2 };
+let anFilter = { status: 'open', severity: '', rule: '' };
+
+const scoreTone = (s) => (s >= 85 ? 'g' : s >= 60 ? 'y' : 'r');
+
+async function renderAnalysis(view) {
+  const args = { p_from: state.from, p_to: state.to, p_agent: state.agent || null };
+  const [cards, issues] = await Promise.all([rpc('analysis_scorecard', args), rpc('analysis_issues', args)]);
+  const r = state.settings.analysis_rules || {};
+  const counts = {};
+  issues.forEach((i) => { if (i.status === 'open') counts[i.rule] = (counts[i.rule] || 0) + 1; });
+  const shown = issues.filter((i) => (!anFilter.status || i.status === anFilter.status)
+    && (!anFilter.severity || i.severity === anFilter.severity) && (!anFilter.rule || i.rule === anFilter.rule));
+  const opt = (v, cur, label) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
+
+  view.innerHTML = `
+    <div class="section-title"><h2>Analysis</h2>
+      <span class="small">Rule-based checks from Voice activity · targets: reply ${r.reply_target_min ?? 15} min · call back ${r.callback_target_min ?? 60} min · change in Settings</span></div>
+
+    <div class="kpis">${cards.map((c) => kpi(esc(c.agent_name), `${c.score}<span class="small"> /100</span>`,
+      `${n(c.high_open)} high · ${n(c.medium_open)} medium · ${n(c.low_open)} low open`, { tone: scoreTone(c.score), icon: ICON.check })).join('') || '<div class="empty">No active agents</div>'}</div>
+
+    <div class="card"><h3>Agent scorecard</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Agent</th><th class="num">Score</th><th class="num">Customer texts</th><th class="num">Replied on time</th><th class="num">Median reply</th>
+          <th class="num">Missed calls</th><th class="num">Returned on time</th><th class="num">Opt-out violations</th><th class="num">Open issues</th><th class="num">Reviewed</th><th class="num">Dismissed</th></tr></thead>
+        <tbody>${cards.map((c) => `<tr>
+          <td>${esc(c.agent_name)}</td>
+          <td class="num"><b style="color:var(--${scoreTone(c.score) === 'g' ? 'green' : scoreTone(c.score) === 'y' ? 'yellow' : 'red'})">${c.score}</b></td>
+          <td class="num">${n(c.customer_texts)}</td><td class="num">${c.replied_on_time_pct == null ? '—' : `${c.replied_on_time_pct}%`}</td>
+          <td class="num">${mins(c.median_reply_min == null ? null : Number(c.median_reply_min))}</td>
+          <td class="num">${n(c.missed_calls)}</td><td class="num">${c.returned_on_time_pct == null ? '—' : `${c.returned_on_time_pct}%`}</td>
+          <td class="num">${c.opt_out_violations ? `<b style="color:var(--red)">${n(c.opt_out_violations)}</b>` : 0}</td>
+          <td class="num">${n(Number(c.high_open) + Number(c.medium_open) + Number(c.low_open))}</td><td class="num">${n(c.reviewed)}</td><td class="num">${n(c.dismissed)}</td>
+        </tr>`).join('')}</tbody></table></div>
+      <p class="small">Score = 100 − 8 per high, 4 per medium, 1 per low issue in the period. Dismissed issues don't count; reviewed ones still do (they happened).</p>
+    </div>
+
+    <div class="card">
+      <div class="section-title"><h3>Issues to check</h3>
+        <div class="row" style="align-items:center">
+          <select id="fStatus">${opt('open', anFilter.status, 'Open')}${opt('reviewed', anFilter.status, 'Reviewed')}${opt('dismissed', anFilter.status, 'Dismissed')}${opt('', anFilter.status, 'All')}</select>
+          <select id="fSev">${opt('', anFilter.severity, 'All severities')}${opt('high', anFilter.severity, 'High')}${opt('medium', anFilter.severity, 'Medium')}${opt('low', anFilter.severity, 'Low')}</select>
+          <select id="fRule">${opt('', anFilter.rule, 'All rules')}${Object.entries(RULES).map(([k, v]) => opt(k, anFilter.rule, `${v.label}${counts[k] ? ` (${counts[k]})` : ''}`)).join('')}</select>
+          <button class="btn dark" id="aCsv">Download (CSV)</button>
+        </div></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Severity</th><th>Rule</th><th>Agent</th><th>Contact</th><th>When</th><th>Detail</th><th>Status</th><th></th></tr></thead>
+        <tbody>${shown.sort((a, b) => SEV_ORDER[a.severity] - SEV_ORDER[b.severity] || Date.parse(b.occurred_at) - Date.parse(a.occurred_at)).map((i) => `
+          <tr data-key="${esc(i.issue_key)}">
+            <td><span class="badge ${i.severity === 'high' ? 'high' : i.severity === 'medium' ? 'medium' : ''}">${i.severity}</span></td>
+            <td>${esc(RULES[i.rule]?.label || i.rule)}</td>
+            <td>${esc(i.agent_name)}</td>
+            <td>${i.conversation_id ? `<a href="#/conversations/${i.conversation_id}">${esc(i.contact || '—')}</a>` : esc(i.contact || '—')}</td>
+            <td>${fmtTime(i.occurred_at)}</td>
+            <td style="white-space:normal;min-width:220px">${esc(i.detail)}${i.note ? `<div class="small muted">Note: ${esc(i.note)}</div>` : ''}</td>
+            <td>${i.status === 'open' ? '<span class="small">open</span>' : `<span class="small">${esc(i.status)}${i.reviewed_by ? ` by ${esc(i.reviewed_by)}` : ''}<br>${ago(i.reviewed_at)}</span>`}</td>
+            <td style="white-space:nowrap">${i.status === 'open'
+              ? '<button class="btn dark aRev">✓ Reviewed</button> <button class="btn dark aDis">Dismiss</button>'
+              : '<button class="btn dark aReopen">Reopen</button>'}</td>
+          </tr>`).join('') || '<tr><td colspan="8" class="empty">Nothing to check here 🎉</td></tr>'}</tbody>
+      </table></div>
+    </div>
+
+    <div class="card"><h3>Rules &amp; best practices</h3>
+      <ul class="insights">${Object.entries(RULES).map(([k, v]) => `<li><b style="color:var(--text)">${v.label}</b> — ${esc(v.why)}</li>`).join('')}</ul>
+    </div>`;
+
+  const reload = () => renderAnalysis(view);
+  $('#fStatus').addEventListener('change', (e) => { anFilter.status = e.target.value; reload(); });
+  $('#fSev').addEventListener('change', (e) => { anFilter.severity = e.target.value; reload(); });
+  $('#fRule').addEventListener('change', (e) => { anFilter.rule = e.target.value; reload(); });
+  $('#aCsv').addEventListener('click', () => downloadCsv(shown, `coco-analysis-${state.from}-to-${state.to}.csv`,
+    ['severity', 'rule', 'agent_name', 'contact', 'occurred_at', 'detail', 'delay_min', 'status', 'note', 'reviewed_by', 'reviewed_at']));
+
+  const review = async (key, status) => {
+    const note = status === 'dismissed' ? prompt('Why dismiss this issue? (optional note)') : prompt('Note for this review (optional)');
+    if (note === null) return; // cancelled
+    const { error } = await sb.from('analysis_reviews').upsert({ issue_key: key, status, note: note.trim() || null, reviewed_at: new Date().toISOString() }, { onConflict: 'issue_key' });
+    if (error) return toast(error.message);
+    toast(status === 'reviewed' ? 'Marked as reviewed' : 'Dismissed');
+    reload();
+  };
+  view.querySelectorAll('tr[data-key]').forEach((tr) => {
+    const key = tr.dataset.key;
+    $('.aRev', tr)?.addEventListener('click', () => review(key, 'reviewed'));
+    $('.aDis', tr)?.addEventListener('click', () => review(key, 'dismissed'));
+    $('.aReopen', tr)?.addEventListener('click', async () => {
+      const { error } = await sb.from('analysis_reviews').delete().eq('issue_key', key);
+      if (error) return toast(error.message);
+      reload();
+    });
+  });
 }
 
 // ---------- conversations (admin only) ----------
@@ -576,8 +683,21 @@ async function renderSettings(view) {
         <div><label>Business timezone</label><select id="sTz">${Object.entries(TZ_NAMES).map(([k, v]) => opt(k, s.business_timezone, `${v} (${k})`)).join('')}</select></div>
         <div><label>Keep data (days)</label><input id="sRet" type="number" min="30" value="${s.retention_days}"></div>
         <div><label>Claude analysis</label><input value="On hold" disabled></div>
-        <div><button class="btn" id="saveSettings">Save</button></div>
       </div>
+      <h3 style="margin-top:18px;font-size:16px">Analysis rules</h3>
+      <div class="row">
+        <div><label>Reply to texts within (min)</label><input id="rReply" type="number" min="1" value="${s.analysis_rules?.reply_target_min ?? 15}"></div>
+        <div><label>Return missed calls within (min)</label><input id="rCb" type="number" min="1" value="${s.analysis_rules?.callback_target_min ?? 60}"></div>
+        <div><label>Follow up after (hours)</label><input id="rFu" type="number" min="1" value="${s.analysis_rules?.followup_after_hours ?? 48}"></div>
+        <div><label>Max unanswered / contact / day</label><input id="rMax" type="number" min="1" value="${s.analysis_rules?.max_unanswered_per_day ?? 3}"></div>
+      </div>
+      <div class="row">
+        <div><label>Quiet hours start</label><input id="rQs" type="time" value="${s.analysis_rules?.quiet_start ?? '21:00'}"></div>
+        <div><label>Quiet hours end</label><input id="rQe" type="time" value="${s.analysis_rules?.quiet_end ?? '08:00'}"></div>
+        <div><label>Customer timezone (quiet hours)</label><select id="rQtz">${Object.entries(TZ_NAMES).map(([k, v]) => opt(k, s.analysis_rules?.quiet_tz ?? 'America/New_York', `${v} (${k})`)).join('')}</select></div>
+        <div><label>Very short call under (sec)</label><input id="rShort" type="number" min="1" value="${s.analysis_rules?.short_call_sec ?? 15}"></div>
+      </div>
+      <div class="row"><div><button class="btn" id="saveSettings">Save</button></div></div>
     </div>`;
 
   // ---- credentials card (shown once) ----
@@ -642,7 +762,15 @@ async function renderSettings(view) {
   });
 
   $('#saveSettings').addEventListener('click', async () => {
-    const upd = { business_timezone: $('#sTz').value, retention_days: Number($('#sRet').value), updated_at: new Date().toISOString() };
+    const num = (id, min = 1) => Math.max(min, Number($(id).value) || min);
+    const upd = {
+      business_timezone: $('#sTz').value, retention_days: Number($('#sRet').value), updated_at: new Date().toISOString(),
+      analysis_rules: {
+        reply_target_min: num('#rReply'), callback_target_min: num('#rCb'), followup_after_hours: num('#rFu'),
+        max_unanswered_per_day: num('#rMax'), quiet_start: $('#rQs').value || '21:00', quiet_end: $('#rQe').value || '08:00',
+        quiet_tz: $('#rQtz').value, short_call_sec: num('#rShort'),
+      },
+    };
     const { data, error } = await sb.from('app_settings').update(upd).eq('id', 1).select().single();
     if (error) return toast(error.message);
     state.settings = data;

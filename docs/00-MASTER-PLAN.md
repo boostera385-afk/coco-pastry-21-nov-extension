@@ -111,6 +111,7 @@ Coco/
 | 3 | Start tracking **when we start working**, **no old history** | Tracking starts at the exact moment the agent connects their token (`agents.tracking_start`); anything earlier is dropped in the extension and server. |
 | 4 | **Only Admin** sees everything; standalone dashboard | Roles: **Admin** (everything) and **Agent** (only their own numbers, no transcripts/contacts). Manager role retired. Separate app + separate Supabase project. |
 | 5, 7 | **Hold Claude** analysis / work | Reports page, AI scores and Analyze buttons removed; `analysis_mode = manual`. Tables kept for later. |
+| — | Analysis **without Claude**, checked by admin | Rule-based checks in SQL (`analysis_issues`, `analysis_scorecard`): missed call not returned, text not answered, opt-out ignored, over-contacting, no follow-up, quiet hours, very short call. Thresholds in Settings (`app_settings.analysis_rules`). Admin marks each issue Reviewed / Dismissed with a note (`analysis_reviews`); dismissed issues don't lower the score. **Analysis** page in the dashboard (admin only). |
 | 6 | **Pakistan** time zone | `Asia/Karachi` in DB, dashboard and extension. |
 
 Still open: verify the Google Voice payload field map (Phase 0) — see `README.md` → "Parser check".

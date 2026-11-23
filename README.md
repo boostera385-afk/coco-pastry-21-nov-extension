@@ -33,7 +33,7 @@ docs/        plan, architecture, Claude analysis handoff (Ibraheem), dashboard s
 
 ## Department rules (2026-11-23)
 
-Business Voice accounts only · every call and every text counts (per contact) · tracking starts at connect, no old history · Admin sees everything, agents see only their own numbers · Claude analysis on hold · Pakistan time (Asia/Karachi). Details: `docs/00-MASTER-PLAN.md` §8.
+Business Voice accounts only · every call and every text counts (per contact) · tracking starts at connect, no old history · Admin sees everything, agents see only their own numbers · Claude on hold — rule-based **Analysis** page instead (missed calls, unanswered texts, opt-outs, over-contacting, follow-ups, quiet hours, short calls; admin reviews each issue) · Pakistan time (Asia/Karachi). Details: `docs/00-MASTER-PLAN.md` §8.
 
 ## Using the extension
 
@@ -58,7 +58,7 @@ Anything unclassified is still stored in `unclassified_events` with the raw payl
 
 ```
 node --test extension/test                      # unit: metrics, timezone, parser (incl. real Voice SMS payload)
-node tests/e2e/run.mjs                          # virtual end-to-end (75 checks), see below
+node tests/e2e/run.mjs                          # virtual end-to-end (91 checks), see below
 node tests/e2e/team.mjs .env dashboard/config.js   # team/permissions (13 checks)
 node scripts/reparse.mjs [--dry]                # re-run the current parser over stored raw events
 ```
@@ -66,7 +66,7 @@ node scripts/reparse.mjs [--dry]                # re-run the current parser over
 `tests/e2e/run.mjs` loads the real extension in Playwright's Chromium, serves a mock `voice.google.com`
 (Voice-format payloads from `tests/e2e/fixtures.mjs`), and talks to the **real** Supabase project with a
 throwaway agent and users that are deleted afterwards. It covers: token connect, install-day cutoff,
-texts/calls/voicemail/unknown capture, no history before connecting, every call/text counted, contacts page, badge, widget, side panel, sent-text self-check,
+texts/calls/voicemail/unknown capture, no history before connecting, every call/text counted, contacts page, rule-based analysis + admin review, badge, widget, side panel, sent-text self-check,
 no duplicates on reload, pause/resume, sync, dashboard metrics, reply rate/time, live dashboard UI,
 transcript security (agent vs manager vs anonymous) and revoked tokens. SMS format is verified from a
 live account; call/voicemail codes are still a best guess until real calls are captured.

@@ -57,7 +57,7 @@ const findChromium = () => {
 };
 
 // ---------------- state for cleanup ----------------
-const created = { users: [], agentId: null, chrome: null, userDir: null };
+const created = { users: [], agentId: null, chrome: null, userDir: null, reviewKeys: [] };
 let SR;
 
 async function makeUser(email, role, agentId = null) {
@@ -171,7 +171,8 @@ async function main() {
   check('tracking starts at the moment of connecting (no old history)', ts0 && Math.abs(Date.parse(ts0) - connectAt) < 60e3, `${ts0} vs ${new Date(connectAt).toISOString()}`);
 
   // ===== 2. Capture a normal session =====
-  const sc = F.scenario(Date.now() + 60 * 60e3, connectAt); // session happens after connecting
+  const sessionEnd = Date.now() + 60 * 60e3;
+  const sc = F.scenario(sessionEnd, connectAt); // session happens after connecting
   threads = sc.threads;
   check('mock Voice page loads (fetch + XHR intercepted)', await loadVoice());
   const widget = await cdp.eval(pageS, "!!document.getElementById('coco-voice-widget')");
@@ -282,6 +283,58 @@ async function main() {
   const anonMsgs = await rest(ANON, `messages?select=id&agent_id=eq.${agentId}`);
   check('anonymous visitor reads nothing', Array.isArray(anonMsgs) && anonMsgs.length === 0);
 
+
+  // ===== 7a. Rule-based analysis (DB functions) + admin review =====
+  const later = new Date(Date.now() + 4 * 864e5).toISOString(); // evaluate "pending" rules as if 4 days passed
+  const toKey2 = new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date(Date.now() + 864e5));
+  const anArgs = { p_from: todayKey, p_to: toKey2, p_agent: agentId, p_now: later };
+  let issues = await rest(adminJwt, 'rpc/analysis_issues', anArgs);
+  const byRule = (rule, contact) => (issues || []).filter((i) => i.rule === rule && (!contact || i.contact === contact));
+  check('analysis: missed call + voicemail from B = ONE "missed call not returned" (high)', byRule('missed_call_not_returned', F.B).length === 1 && byRule('missed_call_not_returned', F.B)[0].severity === 'high', JSON.stringify(byRule('missed_call_not_returned')));
+  check('analysis: answered call from D is not flagged', byRule('missed_call_not_returned', F.D).length === 0);
+  check('analysis: A\'s text answered in 5 min is not flagged', byRule('text_not_answered', F.A).length === 0, JSON.stringify(byRule('text_not_answered', F.A)));
+  check('analysis: E\'s text never answered = high', byRule('text_not_answered', F.E).length === 1 && byRule('text_not_answered', F.E)[0].severity === 'high');
+  check('analysis: single unanswered attempt to G1 = "no follow-up"', byRule('no_follow_up', F.G1).length === 1);
+  check('analysis: A (replied) not flagged for follow-up / over-contacting', byRule('no_follow_up', F.A).length === 0 && byRule('over_contacting', F.A).length === 0);
+  const nowIssues = await rest(adminJwt, 'rpc/analysis_issues', { ...anArgs, p_now: new Date().toISOString() });
+  check('analysis: fresh items are not flagged before their deadline', !(nowIssues || []).some((i) => i.rule === 'no_follow_up'));
+
+  // inject opt-out, over-contacting and short-call cases through the real ingest function (SQL)
+  const ev = (id, contact, type, direction, atMin, extra = {}) => ({
+    type, gv_id: `e2ean${id}${'0'.repeat(30)}`.slice(0, 40), gv_thread_id: `t.${contact}`, contact_number: contact, direction,
+    occurred_at: new Date(sessionEnd + atMin * 60e3).toISOString(), body: null, call_outcome: null, duration_sec: 0, ...extra });
+  const OPT = '+15550100008'; const OVER = '+15550100009'; const SHORT = '+15550100010';
+  const extra = [
+    ev('f1', OPT, 'text', 'inbound', 80, { body: 'STOP' }),
+    ev('f2', OPT, 'text', 'outbound', 90, { body: 'Sorry to bother you, one more thing…' }),
+    ev('k1', OVER, 'text', 'outbound', 100, { body: 'Hi' }), ev('k2', OVER, 'text', 'outbound', 101, { body: 'Hello?' }),
+    ev('k3', OVER, 'text', 'outbound', 102, { body: 'Are you there?' }), ev('k4', OVER, 'call', 'outbound', 103),
+    ev('s1', SHORT, 'call', 'outbound', 110, { call_outcome: 'answered', duration_sec: 5 }),
+  ];
+  await sql(`select ingest_batch('${agentId}', null, 'e2e', $e2e$${JSON.stringify(extra)}$e2e$::jsonb, null)`);
+  issues = await rest(adminJwt, 'rpc/analysis_issues', anArgs);
+  check('analysis: contacting a customer after "STOP" = opt-out ignored (high)', byRule('opt_out_ignored', OPT).length === 1 && byRule('opt_out_ignored', OPT)[0].severity === 'high', JSON.stringify(byRule('opt_out_ignored')));
+  check('analysis: 4 unanswered attempts in a day = over-contacting', byRule('over_contacting', OVER).length === 1);
+  check('analysis: 5-second connected call = very short call', byRule('very_short_call', SHORT).length === 1);
+
+  const card0 = (await rest(adminJwt, 'rpc/analysis_scorecard', anArgs))?.[0];
+  check('scorecard: score + reply/return metrics computed', card0 && card0.score < 100 && Number(card0.customer_texts) === 3 && Number(card0.missed_calls) === 1 && Number(card0.opt_out_violations) === 1, JSON.stringify(card0));
+
+  // admin review: dismiss one issue -> status shows, score goes up, reopen works
+  const target = byRule('no_follow_up', F.G1)[0];
+  created.reviewKeys.push(target.issue_key);
+  const up = await fetch(`${URL_}/rest/v1/analysis_reviews`, { method: 'POST', headers: { apikey: ANON, Authorization: `Bearer ${adminJwt}`, 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates' },
+    body: JSON.stringify({ issue_key: target.issue_key, status: 'dismissed', note: 'e2e: customer asked to wait' }) });
+  check('admin can dismiss an issue with a note', up.ok, `${up.status} ${await up.text()}`);
+  issues = await rest(adminJwt, 'rpc/analysis_issues', anArgs);
+  const after = byRule('no_follow_up', F.G1)[0];
+  check('dismissed issue shows status, note and reviewer', after?.status === 'dismissed' && after?.note === 'e2e: customer asked to wait' && /e2e-admin-/.test(after?.reviewed_by || ''), JSON.stringify(after));
+  const card1 = (await rest(adminJwt, 'rpc/analysis_scorecard', anArgs))?.[0];
+  check('dismissed issue no longer lowers the score (+1 for a low issue)', card1 && card1.score === card0.score + 1, `${card0?.score} -> ${card1?.score}`);
+  const agentIssues = await rest(agentJwt, 'rpc/analysis_issues', anArgs);
+  const agentReviews = await rest(agentJwt, 'analysis_reviews?select=issue_key');
+  check('agent-role user cannot see analysis or reviews (admin only)', Array.isArray(agentIssues) && agentIssues.length === 0 && Array.isArray(agentReviews) && agentReviews.length === 0);
+
   // ===== 7b. Live dashboard UI (Vercel) signed in as the temp admin =====
   const { targetId: dashId } = await cdp.send('Target.createTarget', { url: 'https://coco-voice-dashboard.vercel.app/' });
   const dS = await cdp.attach(dashId);
@@ -295,8 +348,9 @@ async function main() {
   await sleep(3000);
   const tiles = await cdp.eval(dS, "[...document.querySelectorAll('.kpis .kpi')].map((k) => [k.querySelector('.label').textContent.trim(), k.querySelector('.value').textContent.trim()])");
   const tile = Object.fromEntries(tiles || []);
-  check('dashboard UI tiles: outbound 5, calls out 1, texts out 4, inbound 5, calls in 2, texts in 2',
-    tile.Outbound === '5' && tile['Calls out'] === '1' && tile['Texts out'] === '4' && tile.Inbound === '5' && tile['Calls in'] === '2' && tile['Texts in'] === '2', JSON.stringify(tile));
+  // session (5 out / 5 in) + analysis cases (6 out: 1 text after STOP, 3 texts + 1 call over-contact, 1 short call; 1 in: STOP)
+  check('dashboard UI tiles: outbound 11, calls out 3, texts out 8, inbound 6, calls in 2, texts in 3',
+    tile.Outbound === '11' && tile['Calls out'] === '3' && tile['Texts out'] === '8' && tile.Inbound === '6' && tile['Calls in'] === '2' && tile['Texts in'] === '3', JSON.stringify(tile));
   const callsInRed = await cdp.eval(dS, "[...document.querySelectorAll('.kpis .kpi')].find((k) => k.textContent.includes('Calls in'))?.classList.contains('r')");
   check('dashboard UI: "Calls in" tile is red when calls were missed', callsInRed === true);
   const insightText = await cdp.eval(dS, "document.querySelector('.insights')?.textContent || ''");
@@ -305,9 +359,12 @@ async function main() {
   check('dashboard UI: agents table shows E2E Bot as Tracking', /Tracking/.test(agentRow), agentRow.replace(/\s+/g, ' ').slice(0, 200));
   await cdp.eval(dS, "location.hash = '#/contacts'; true");
   const contactRows = await waitFor(() => cdp.eval(dS, "document.querySelectorAll('#ctable tbody tr.click').length"), 10000);
-  check('dashboard UI: Contacts page lists every contact', contactRows === 5, `got ${contactRows}`);
+  check('dashboard UI: Contacts page lists every contact (5 + 3 analysis cases)', contactRows === 8, `got ${contactRows}`);
+  await cdp.eval(dS, "location.hash = '#/analysis'; true");
+  const anRows = await waitFor(() => cdp.eval(dS, "document.querySelectorAll('tr[data-key]').length"), 15000);
+  check('dashboard UI: Analysis page lists issues with Reviewed / Dismiss buttons', anRows >= 1 && await cdp.eval(dS, "!!document.querySelector('.aRev') && !!document.querySelector('.aDis')"), `rows ${anRows}`);
   const navText = await cdp.eval(dS, "document.getElementById('navLinks').textContent");
-  check('dashboard UI: no Reports / Claude page (on hold)', !/Reports|coaching/i.test(navText) && /Contacts/.test(navText), navText);
+  check('dashboard UI: Contacts + Analysis in nav, no Claude/Reports page', !/Reports|coaching/i.test(navText) && /Contacts/.test(navText) && /Analysis/.test(navText), navText);
   await cdp.eval(dS, "location.hash = '#/conversations'; true");
   const convItems = await waitFor(() => cdp.eval(dS, "document.querySelectorAll('#clist .item').length"), 10000);
   check('dashboard UI: conversations page lists threads', convItems >= 4, `got ${convItems}`);
@@ -334,6 +391,7 @@ async function cleanup() {
   await sleep(800);
   try { if (created.userDir) fs.rmSync(created.userDir, { recursive: true, force: true }); } catch { /* locked files: harmless temp dir */ }
   for (const id of created.users) await fetch(`${URL_}/auth/v1/admin/users/${id}`, { method: 'DELETE', headers: { apikey: SR, Authorization: `Bearer ${SR}` } }).catch(() => {});
+  if (created.reviewKeys.length) await sql(`delete from analysis_reviews where issue_key in (${created.reviewKeys.map((k) => `'${k}'`).join(',')})`).catch(() => {});
   if (created.agentId) await sql(`delete from agents where id = '${created.agentId}'`).catch(() => {});
   await sql("delete from contacts c where c.phone_e164 like '+155501000%' and not exists (select 1 from conversations v where v.contact_id = c.id)").catch(() => {});
   const [left] = await sql("select (select count(*) from agents where name='E2E Bot') agents, (select count(*) from auth.users where email like 'e2e-%@example.com') users, (select count(*) from contacts where phone_e164 like '+155501000%') contacts");
