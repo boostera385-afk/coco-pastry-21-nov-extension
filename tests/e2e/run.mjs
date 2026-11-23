@@ -388,7 +388,19 @@ async function main() {
   await syncNow();
   st = await waitFor(async () => { const x = await store(); return x.lastSyncError && x; }, 10000);
   check('revoked token -> clear "Token rejected" error in the extension', /Token rejected/.test(st?.lastSyncError || ''), st?.lastSyncError);
-  check('status turns red on sync error', st?.status?.level === 'bad', JSON.stringify(st?.status));
+  const red = await waitFor(async () => { const x = await store(); return x.status?.level === 'bad' && x.status; }, 5000);
+  check('status turns red on sync error', !!red, JSON.stringify((await store()).status));
+
+  // ===== 9. Google Voice closed -> OFF badge, Open Google Voice shortcut reopens it =====
+  await sql(`update agents set token_hash = '${crypto.createHash('sha256').update(token).digest('hex')}' where id='${agentId}'`);
+  await cdp.eval(swS2 || swS, "chrome.storage.local.set({ lastSyncError: null, failures: 0, backoffUntil: 0 })");
+  for (const t of (await cdp.send('Target.getTargets')).targetInfos.filter((x) => x.type === 'page' && x.url.startsWith('https://voice.google.com'))) await cdp.send('Target.closeTarget', { targetId: t.targetId });
+  const offBadge = await waitFor(async () => (await cdp.eval(swS2 || swS, 'chrome.action.getBadgeText({})')) === 'OFF', 8000);
+  const offStatus = (await store()).status;
+  check('Voice closed: badge shows OFF and status says Google Voice is not open', offBadge && offStatus?.voiceOpen === false && /not open/.test(offStatus?.text || ''), JSON.stringify(offStatus));
+  await cdp.eval(panelS, "chrome.runtime.sendMessage({ type: 'open-voice' }).catch(() => {}); true");
+  const reopened = await waitFor(async () => (await cdp.send('Target.getTargets')).targetInfos.some((x) => x.type === 'page' && x.url.startsWith('https://voice.google.com')), 8000);
+  check('Open Google Voice shortcut opens a (pinned) Voice tab', reopened);
 
   cdp.close();
 }

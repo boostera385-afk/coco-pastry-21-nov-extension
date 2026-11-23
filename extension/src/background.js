@@ -2,7 +2,7 @@
 // Also owns the shared status (badge, side panel, in-page widget) and pause/resume.
 import { parseResponse, parseSendRequest, PARSER_VERSION } from './parser/gv-protojson.js';
 import { DEFAULT_TZ, summarize, dayKey } from './lib/metrics.js';
-import { INGEST_URL, TOKEN_RE } from './config.js';
+import { INGEST_URL, TOKEN_RE, DASHBOARD_URL } from './config.js';
 
 const KEEP_DAYS = 35;          // local history for the panel
 const BATCH = 100;
@@ -21,8 +21,35 @@ const serial = (fn) => (chain = chain.then(fn, fn));
 function setup() {
   chrome.alarms.create('sync', { periodInMinutes: 1 });
   chrome.sidePanel?.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+  // right-click on the toolbar icon
+  chrome.contextMenus?.removeAll(() => {
+    chrome.contextMenus.create({ id: 'open-voice', title: 'Open Google Voice', contexts: ['action'] });
+    chrome.contextMenus.create({ id: 'open-dashboard', title: 'Open Coco dashboard', contexts: ['action'] });
+  });
   refreshStatus();
 }
+
+chrome.contextMenus?.onClicked.addListener((info) => {
+  if (info.menuItemId === 'open-voice') openVoice();
+  if (info.menuItemId === 'open-dashboard') chrome.tabs.create({ url: DASHBOARD_URL });
+});
+// keyboard shortcut (chrome://extensions/shortcuts to change it)
+chrome.commands?.onCommand.addListener((cmd) => { if (cmd === 'open-voice') openVoice(); });
+
+// Opt-in (Settings): open Google Voice in a pinned background tab when Chrome starts.
+chrome.runtime.onStartup.addListener(async () => {
+  const st = await get(['autoOpenVoice', 'agentToken', 'paused']);
+  if (!st.autoOpenVoice || !st.agentToken || st.paused) return;
+  if (!(await chrome.tabs.query({ url: 'https://voice.google.com/*' })).length) {
+    await chrome.tabs.create({ url: VOICE_URL, pinned: true, active: false });
+  }
+});
+
+// Voice tab opened / closed -> update status, badge and panel right away (not after the heartbeat times out).
+let tabRefresh = null;
+const onVoiceTabChange = () => { clearTimeout(tabRefresh); tabRefresh = setTimeout(refreshStatus, 500); };
+chrome.tabs.onRemoved.addListener(onVoiceTabChange);
+chrome.tabs.onUpdated.addListener((_id, change) => { if (change.url || change.status === 'complete') onVoiceTabChange(); });
 
 chrome.runtime.onInstalled.addListener(async ({ reason }) => {
   if (reason === 'install') {
@@ -273,10 +300,12 @@ async function refreshStatus() {
   const fresh = st.serverSummary?.today && Date.now() - (st.serverSummaryAt || 0) < 15 * 60e3 && !(st.queue || []).length;
   const summary = fresh ? st.serverSummary.today : summarize(Object.values(st.events || {}), today, today, tz);
 
+  const voiceOpen = (await chrome.tabs.query({ url: 'https://voice.google.com/*' }).catch(() => [])).length > 0;
   let level = 'ok';
   let text = 'Tracking';
   if (!st.agentToken) { level = 'bad'; text = 'Not connected — paste your token in Settings'; }
   else if (st.paused) { level = 'paused'; text = 'Paused'; }
+  else if (!voiceOpen) { level = 'warn'; text = 'Google Voice is not open — open it to track'; }
   else if (!st.lastHeartbeat || Date.now() - st.lastHeartbeat > TAB_STALE_MS) { level = 'warn'; text = 'Open Google Voice to track'; }
   else if (st.needsVoiceReload) { level = 'warn'; text = 'Reload Google Voice to finish the update'; }
   else if (st.pageLoadAt && !st.capturesSinceLoad && Date.now() - st.pageLoadAt > 90e3) {
@@ -288,13 +317,16 @@ async function refreshStatus() {
   else if (st.lastSyncError) { level = 'bad'; text = 'Sync error — retrying'; }
   else if ((st.queue || []).length) { level = 'warn'; text = `${st.queue.length} waiting to sync`; }
 
-  await set({ status: { level, text, at: Date.now() }, summaryToday: summary });
+  await set({ status: { level, text, at: Date.now(), voiceOpen }, summaryToday: summary });
 
   const colors = { ok: '#00843d', warn: '#ffba00', bad: '#cc3433', paused: '#777777' };
   await chrome.action.setBadgeBackgroundColor({ color: colors[level] });
   await chrome.action.setBadgeTextColor?.({ color: level === 'warn' ? '#000000' : '#ffffff' });
-  await chrome.action.setBadgeText({ text: level === 'paused' ? 'II' : level === 'bad' ? '!' : String(summary.outboundTotal || '') });
-  await chrome.action.setTitle({ title: `Coco Voice — ${text} · ${summary.outboundTotal} outbound today` });
+  const off = st.agentToken && !st.paused && !voiceOpen;
+  await chrome.action.setBadgeText({ text: level === 'paused' ? 'II' : level === 'bad' ? '!' : off ? 'OFF' : String(summary.outboundTotal || '') });
+  await chrome.action.setTitle({ title: off
+    ? 'Coco Voice — Google Voice is not open. Click, press Alt+Shift+V, or right-click → Open Google Voice'
+    : `Coco Voice — ${text} · ${summary.outboundTotal} outbound today` });
 }
 
 chrome.storage.onChanged.addListener((c, area) => {

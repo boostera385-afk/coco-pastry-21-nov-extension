@@ -35,7 +35,8 @@ async function render() {
   $('statusText').textContent = st.status?.text || 'Starting…';
   $('who').textContent = st.agentToken ? `Connected as ${st.agentName || 'agent'}${st.agentNumber ? ` · ${st.agentNumber}` : ''}` : '';
   $('statusSub').textContent = st.agentToken ? `Last sync ${ago(st.lastSyncAt)}${st.lastSyncError ? ` · ${st.lastSyncError}` : ''} · numbers ${serverFresh ? 'from dashboard' : 'local (not yet synced)'}` : '';
-  $('openVoice').hidden = level !== 'warn' || !/Open Google Voice/.test(st.status?.text || '');
+  $('openVoiceBox').hidden = !st.agentToken || st.paused || !(st.status?.voiceOpen === false || /Open Google Voice/i.test(st.status?.text || ''));
+  $('goVoice').classList.toggle('attn', st.status?.voiceOpen === false && !!st.agentToken && !st.paused);
   $('setup').hidden = !!st.agentToken;
   $('reloadVoice').hidden = !/reload Google Voice/i.test(st.status?.text || '');
 
@@ -72,6 +73,7 @@ $('sync').addEventListener('click', async () => {
   render();
 });
 $('openVoice').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'open-voice' }));
+$('goVoice').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'open-voice' }));
 $('setup').addEventListener('click', () => chrome.runtime.openOptionsPage());
 $('reloadVoice').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'reload-voice' }));
 $('openDash').addEventListener('click', () => chrome.tabs.create({ url: DASHBOARD_URL }));

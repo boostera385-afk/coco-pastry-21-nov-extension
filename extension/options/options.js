@@ -17,6 +17,7 @@ async function load() {
   $('agentMeta').textContent = [st.agentNumber && `Voice number ${st.agentNumber}`, st.lastSyncAt && `last sync ${new Date(st.lastSyncAt).toLocaleTimeString()}`, st.lastSyncError].filter(Boolean).join(' · ');
 
   $('showWidget').checked = st.showWidget !== false;
+  $('autoOpenVoice').checked = !!st.autoOpenVoice;
   $('debugRecord').checked = !!st.debugRecord;
   const tz = st.timezone || DEFAULT_TZ;
   const since = st.trackingStart ? new Date(st.trackingStart).toLocaleString('en-US', { timeZone: tz }) : 'not started — connect your token';
@@ -57,6 +58,7 @@ $('disconnect').addEventListener('click', async () => {
   load();
 });
 $('showWidget').addEventListener('change', (e) => chrome.storage.local.set({ showWidget: e.target.checked }));
+$('autoOpenVoice').addEventListener('change', (e) => chrome.storage.local.set({ autoOpenVoice: e.target.checked }));
 $('debugRecord').addEventListener('change', (e) => chrome.storage.local.set({ debugRecord: e.target.checked }));
 $('clear').addEventListener('click', async () => { await chrome.storage.local.set({ samples: [] }); load(); });
 $('download').addEventListener('click', async () => {
