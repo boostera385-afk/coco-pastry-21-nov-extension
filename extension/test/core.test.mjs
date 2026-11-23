@@ -51,7 +51,7 @@ test('outbound reach counts a contact once per day', () => {
 
 test('parser: thread list with known type codes', () => {
   const ts = at('2026-11-23T15:00:00Z');
-  const msg = (id, t, code, text) => [id, t, null, null, null, code, null, null, null, text, null, null, null];
+  const msg = (id, t, code, text) => [id, t, null, null, code, null, null, null, null, text, null, null, null];
   const body = `)]}'\n${JSON.stringify([[
     ['t.+15550000001', 1, [msg('m1', ts, 11, 'Hi, this is Sam'), msg('m2', String(ts + 60000), 10, 'Who?')]],
     ['t.+15550000002', 0, [msg('m3', ts, 99, 'odd')]],
@@ -65,6 +65,19 @@ test('parser: thread list with known type codes', () => {
   ]);
   assert.equal(events[1].occurred_at, new Date(ts + 60000).toISOString());
   assert.equal(events[0].body, 'Hi, this is Sam');
+});
+
+test('parser: real Google Voice SMS payload (verified 2026-11-23, numbers redacted)', () => {
+  const N = '+15550001111';
+  const sent = ['256de863b94af335722ef92db53b54902f21a75b', 1795418264432, N, [N, N, null, null, null, null, 0], 11, 1, null, null, null, 'Hi', null, null, 6, 1, null, N, 0, '4821821224143405226', [null, 1], null, null, null, null, null, null, null, null, null, null, `t.${N}`];
+  const recv = ['3d12844c924e931262753841b2ca06b3fb15f7e6', 1795418265098, N, [N, N, null, null, null, null, 0], 10, 1, null, null, null, 'Hi', null, null, 5, 1, null, N, 0, null, [null, 1], null, null, null, null, null, null, null, null, null, null, `t.${N}`];
+  const body = `)]}'\n${JSON.stringify([[[`t.${N}`, 1, [sent, recv]]]])}`;
+  const { events } = parseResponse('https://clients6.google.com/voice/v1/voiceclient/api2thread/list', body, { agentNumber: N });
+  assert.deepEqual(events.map((e) => [e.type, e.direction, e.body, e.contact_number]), [
+    ['text', 'outbound', 'Hi', N],
+    ['text', 'inbound', 'Hi', N],
+  ]);
+  assert.equal(events[0].occurred_at, new Date(1795418264432).toISOString());
 });
 
 test('parser: ignores unrelated urls and bad json', () => {

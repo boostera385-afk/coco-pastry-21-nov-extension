@@ -6,14 +6,16 @@
 // can't classify is still sent with direction/kind = 'unknown' plus the raw array, so it
 // can be re-parsed server-side later and is visible on the dashboard as "unclassified".
 
-export const PARSER_VERSION = '0.2.0-unverified';
+export const PARSER_VERSION = '0.3.0-sms-verified';
 
 export const FIELD_MAP = {
   // thread = [threadId, isRead, [messages...], ...]
   thread: { id: 0, messages: 2 },
-  // message = [msgId, timestampMs, ..., typeCode @type, ..., text @text, ...]
-  message: { id: 0, timestamp: 1, type: 5, text: 9, duration: 11, transcript: 12 },
-  // typeCode -> { kind, direction, outcome }
+  // message = [msgId, timestampMs, phone, [phones], typeCode, read, …, text, …, threadId]
+  // VERIFIED 2026-11-23 from live SMS (sent + received): id@0, timestamp ms@1, type@4, text@9.
+  // NOT yet verified: call / voicemail type codes, duration and transcript positions.
+  message: { id: 0, timestamp: 1, type: 4, text: 9, duration: 11, transcript: 12 },
+  // typeCode -> { kind, direction, outcome }   (10/11 verified; call codes still a best guess)
   typeCodes: {
     1:  { kind: 'call', direction: 'inbound', outcome: 'answered' },
     2:  { kind: 'voicemail', direction: 'inbound', outcome: 'voicemail' },
