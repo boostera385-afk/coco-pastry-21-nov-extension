@@ -107,8 +107,9 @@ async function main() {
   check('extension loads and its service worker starts', sw, 'no service worker target');
   if (!sw) return;
   const extId = sw.url.split('/')[2];
-  const swS = await cdp.attach(sw.targetId);
-  const store = () => cdp.eval(swS, 'chrome.storage.local.get(null)');
+  let swS = await cdp.attach(sw.targetId);
+  let swS2 = null;
+  const store = () => cdp.eval(swS2 || swS, 'chrome.storage.local.get(null)');
 
   // ---------- mock voice.google.com + clients6.google.com ----------
   let threads = [];
@@ -152,10 +153,10 @@ async function main() {
     const { targetId } = await cdp.send('Target.createTarget', { url: `chrome-extension://${extId}/${p}` });
     const s = await cdp.attach(targetId);
     await cdp.send('Page.enable', {}, s);
-    await waitFor(() => cdp.eval(s, "document.readyState === 'complete'"), 10000);
+    await waitFor(() => cdp.eval(s, "location.protocol === 'chrome-extension:' && document.readyState === 'complete'"), 15000);
     return s;
   }
-  const optS = await openExtPage('options/options.html');
+  let optS = await openExtPage('options/options.html');
   const syncNow = () => cdp.eval(optS, "chrome.runtime.sendMessage({ type: 'sync-now' })");
 
   // ===== 1. Connect with token only =====
@@ -238,7 +239,7 @@ async function main() {
   await cdp.eval(panelS, "document.getElementById('pause').click(); true");
   st = await waitFor(async () => { const x = await store(); return x.paused && x; }, 5000);
   check('Pause (with confirmation) sets paused state', st?.paused === true);
-  check('badge shows II while paused', (await cdp.eval(swS, 'chrome.action.getBadgeText({})')) === 'II');
+  check('badge shows II while paused', (await cdp.eval(swS2 || swS, 'chrome.action.getBadgeText({})')) === 'II');
   threads = [...threads, F.scenarioPaused(Date.now() + 70 * 60e3)];
   await loadVoice();
   st = await store();
@@ -377,7 +378,7 @@ async function main() {
 
   // ===== 8. Revoked token =====
   await sql(`update agents set token_hash = 'revoked-${crypto.randomBytes(4).toString('hex')}' where id='${agentId}'`);
-  await cdp.eval(swS, "chrome.storage.local.set({ heartbeatPending: true, backoffUntil: 0 })");
+  await cdp.eval(swS2 || swS, "chrome.storage.local.set({ heartbeatPending: true, backoffUntil: 0 })");
   await syncNow();
   st = await waitFor(async () => { const x = await store(); return x.lastSyncError && x; }, 10000);
   check('revoked token -> clear "Token rejected" error in the extension', /Token rejected/.test(st?.lastSyncError || ''), st?.lastSyncError);

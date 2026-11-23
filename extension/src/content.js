@@ -21,6 +21,8 @@
     send({ type: 'heartbeat', visible: !document.hidden });
   };
   const timer = setInterval(beat, 5 * 60 * 1000);
+  // fresh = injected at document_start by a normal page load (interceptor is the current version)
+  send({ type: 'page-load', fresh: document.readyState === 'loading' });
   beat();
   document.addEventListener('visibilitychange', () => { if (!document.hidden) beat(); });
 })();

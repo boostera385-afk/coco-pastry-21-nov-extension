@@ -34,6 +34,7 @@ async function render() {
   $('statusSub').textContent = st.agentToken ? `Last sync ${ago(st.lastSyncAt)}${st.lastSyncError ? ` · ${st.lastSyncError}` : ''}` : '';
   $('openVoice').hidden = level !== 'warn' || !/Open Google Voice/.test(st.status?.text || '');
   $('setup').hidden = !!st.agentToken;
+  $('reloadVoice').hidden = !/reload Google Voice/i.test(st.status?.text || '');
   $('since').textContent = st.trackingStart
     ? `Tracking since ${new Date(st.trackingStart).toLocaleString('en-US', { timeZone: tz, dateStyle: 'medium', timeStyle: 'short' })} · Pakistan time`
     : 'Tracking starts when you connect your token.';
@@ -72,6 +73,7 @@ $('sync').addEventListener('click', async () => {
 });
 $('openVoice').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'open-voice' }));
 $('setup').addEventListener('click', () => chrome.runtime.openOptionsPage());
+$('reloadVoice').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'reload-voice' }));
 $('openDash').addEventListener('click', () => chrome.tabs.create({ url: DASHBOARD_URL }));
 $('settings').addEventListener('click', (e) => { e.preventDefault(); chrome.runtime.openOptionsPage(); });
 chrome.storage.onChanged.addListener(render);

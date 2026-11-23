@@ -6,7 +6,7 @@
 // can't classify is still sent with direction/kind = 'unknown' plus the raw array, so it
 // can be re-parsed server-side later and is visible on the dashboard as "unclassified".
 
-export const PARSER_VERSION = '0.3.0-sms-verified';
+export const PARSER_VERSION = '0.4.1-sms-verified';
 
 export const FIELD_MAP = {
   // thread = [threadId, isRead, [messages...], ...]
@@ -108,7 +108,8 @@ export function parseResponse(url, bodyText, ctx = {}) {
   if (/account\/get/.test(url)) {
     return { events: [], agentNumber: findPhone(data, 6) };
   }
-  if (!/api2thread\/(list|get)/.test(url)) return { events: [] };
+  if (/api2thread\/sendsms/.test(url)) return { events: [] }; // request echo, handled by parseSendRequest
+  // Any other voiceclient response: Google may deliver threads through several endpoints.
 
   const events = [];
   for (const t of collectThreads(data)) {

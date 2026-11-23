@@ -37,6 +37,9 @@ chrome.runtime.onInstalled.addListener(async ({ reason }) => {
     });
   }
   setup();
+  const open = await chrome.tabs.query({ url: 'https://voice.google.com/*' });
+  // Already-open Voice tabs keep the OLD page hooks until they are reloaded: say so clearly.
+  await set({ needsVoiceReload: open.length > 0 });
   injectIntoOpenVoiceTabs();
 });
 chrome.runtime.onStartup.addListener(setup);
@@ -66,6 +69,16 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
         await refreshStatus();
         break;
       case 'open-voice': await openVoice(); break;
+      case 'reload-voice': {
+        const tabs = await chrome.tabs.query({ url: 'https://voice.google.com/*' });
+        for (const t of tabs) await chrome.tabs.reload(t.id);
+        if (!tabs.length) await openVoice();
+        break;
+      }
+      case 'page-load':
+        if (msg.fresh) await set({ needsVoiceReload: false, pageLoadAt: Date.now(), capturesSinceLoad: 0 });
+        await refreshStatus();
+        break;
       case 'reset-local': await serial(() => set({ events: {}, queue: [] })); break;
       default: break;
     }
@@ -123,6 +136,11 @@ async function onCapture({ url, body, reqBody }) {
   const health = st.health || { captures: 0, parsed: 0, unknown: 0, sendChecks: [] };
   health.captures++;
   health.lastCaptureAt = Date.now();
+  // diagnostics: which Voice endpoints the page uses (path only, no data)
+  const path = (String(url).match(/voiceclient\/([a-z0-9/_]+)/i) || [])[1] || 'other';
+  health.endpoints = { ...(health.endpoints || {}), [path]: ((health.endpoints || {})[path] || 0) + 1 };
+  const { capturesSinceLoad = 0 } = await get('capturesSinceLoad');
+  await set({ capturesSinceLoad: capturesSinceLoad + 1 });
 
   if (st.debugRecord) {
     const samples = (st.samples || []).slice(-(MAX_SAMPLES - 1));
@@ -175,7 +193,7 @@ async function onCapture({ url, body, reqBody }) {
 
 // ---------- shared status: badge + summary for panel and widget ----------
 async function refreshStatus() {
-  const st = await get(['events', 'timezone', 'agentToken', 'lastHeartbeat', 'lastSyncError', 'queue', 'paused', 'lastSyncAt']);
+  const st = await get(['events', 'timezone', 'agentToken', 'lastHeartbeat', 'lastSyncError', 'queue', 'paused', 'lastSyncAt', 'needsVoiceReload', 'pageLoadAt', 'capturesSinceLoad']);
   const tz = st.timezone || DEFAULT_TZ;
   const today = dayKey(Date.now(), tz);
   const summary = summarize(Object.values(st.events || {}), today, today, tz);
@@ -185,6 +203,8 @@ async function refreshStatus() {
   if (!st.agentToken) { level = 'bad'; text = 'Not connected — paste your token in Settings'; }
   else if (st.paused) { level = 'paused'; text = 'Paused'; }
   else if (!st.lastHeartbeat || Date.now() - st.lastHeartbeat > TAB_STALE_MS) { level = 'warn'; text = 'Open Google Voice to track'; }
+  else if (st.needsVoiceReload) { level = 'warn'; text = 'Reload Google Voice to finish the update'; }
+  else if (st.pageLoadAt && !st.capturesSinceLoad && Date.now() - st.pageLoadAt > 90e3) { level = 'bad'; text = 'No Voice data detected — reload Google Voice'; }
   else if (st.lastSyncError) { level = 'bad'; text = 'Sync error — retrying'; }
   else if ((st.queue || []).length) { level = 'warn'; text = `${st.queue.length} waiting to sync`; }
 
@@ -229,7 +249,7 @@ async function sync() {
           parser_version: PARSER_VERSION,
           agent_number: st.agentNumber || null,
           tracking_start: st.trackingStart ? new Date(st.trackingStart).toISOString() : null,
-          heartbeat: { at: new Date().toISOString(), health: { ...st.health, sendChecks: undefined } },
+          heartbeat: { at: new Date().toISOString(), health: { ...st.health, sendChecks: undefined, status: (await get('status')).status?.text || null } },
           events: batch,
         }),
         signal: AbortSignal.timeout(30000),
