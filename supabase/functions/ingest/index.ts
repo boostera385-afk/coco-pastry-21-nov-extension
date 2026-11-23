@@ -30,7 +30,7 @@ Deno.serve(async (req) => {
   if (!/^coco_[0-9a-f]{48}$/.test(token)) return json({ error: 'missing or malformed token' }, 401);
 
   const { data: agent, error: agentErr } = await supabase
-    .from('agents').select('id, active').eq('token_hash', await sha256(token)).maybeSingle();
+    .from('agents').select('id, active, name').eq('token_hash', await sha256(token)).maybeSingle();
   if (agentErr) return json({ error: 'lookup failed' }, 500);
   if (!agent || !agent.active) return json({ error: 'invalid or inactive token' }, 401);
 
@@ -50,5 +50,5 @@ Deno.serve(async (req) => {
     p_client_start: typeof body.tracking_start === 'string' ? body.tracking_start : null,
   });
   if (error) return json({ error: error.message }, 500);
-  return json(data);
+  return json({ ...data, agent: { name: agent.name } });
 });

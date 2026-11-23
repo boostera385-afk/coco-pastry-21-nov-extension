@@ -276,6 +276,15 @@ function insights(t, rows, daily) {
 }
 const isSilent = (r) => !r.last_heartbeat_at || Date.now() - Date.parse(r.last_heartbeat_at) > 24 * 3600e3;
 
+/** Extension connection status for an agent row (needs last_heartbeat_at, optional last_health). */
+function connBadge(a) {
+  if (!a.last_heartbeat_at) return '<span class="dot"></span> Not connected yet';
+  if (a.last_health?.paused) return `<span class="dot warn"></span> Paused <span class="small muted">${ago(a.last_health.pausedAt || a.last_heartbeat_at)}</span>`;
+  const mins = (Date.now() - Date.parse(a.last_heartbeat_at)) / 60e3;
+  if (mins <= 30) return `<span class="dot ok"></span> Tracking <span class="small muted">${ago(a.last_heartbeat_at)}</span>`;
+  return `<span class="dot ${mins > 1440 ? 'bad' : 'warn'}"></span> Last seen ${ago(a.last_heartbeat_at)}`;
+}
+
 function barChart(daily) {
   if (!daily.length) return '<div class="empty">No data</div>';
   const W = 720, H = 220, P = 26;
@@ -316,10 +325,12 @@ const kpi = (label, value, sub = '', { hero = false, tone = 'y', icon = ICON.che
 
 async function renderOverview(view) {
   const agent = isMgr() ? state.agent || null : state.agentId;
-  const [rows, daily] = await Promise.all([
+  const [rows, daily, healthRows] = await Promise.all([
     rpc('metrics_summary', { p_from: state.from, p_to: state.to, p_agent: agent }),
     rpc('metrics_daily', { p_from: state.from, p_to: state.to, p_agent: agent }),
+    sb.from('agents').select('id, last_health').then((r) => r.data || []),
   ]);
+  const health = Object.fromEntries(healthRows.map((h) => [h.id, h.last_health]));
   const t = totals(rows);
   const period = state.from === state.to ? fmtDay(state.from) : `${fmtDay(state.from)} – ${fmtDay(state.to)}`;
   view.innerHTML = `
@@ -349,7 +360,7 @@ async function renderOverview(view) {
             <td class="num">${n(r.inbound_calls)}</td><td class="num">${n(r.missed_calls)}</td><td class="num">${n(r.inbound_texts)}</td>
             <td class="num">${r.response_rate == null ? '—' : `${r.response_rate}%`}</td><td class="num">${mins(r.avg_reply_min)}</td>
             ${isMgr() ? `<td class="num">${r.avg_score ?? '—'}</td>` : ''}
-            <td><span class="dot ${isSilent(r) ? 'bad' : 'ok'}"></span> ${ago(r.last_heartbeat_at)}<div class="small muted">since ${r.tracking_start ? fmtDay(dayKeyIso(r.tracking_start)) : '—'}</div></td>
+            <td>${connBadge({ last_heartbeat_at: r.last_heartbeat_at, last_health: health[r.agent_id] })}<div class="small muted">since ${r.tracking_start ? fmtDay(dayKeyIso(r.tracking_start)) : '—'}</div></td>
           </tr>`).join('') || '<tr><td colspan="13" class="empty">No agents yet</td></tr>'}</tbody>
       </table></div>
     </div>`;
@@ -539,7 +550,7 @@ async function renderAccount(view) {
 // ---------- settings (admin) ----------
 async function renderSettings(view) {
   const [{ data: agents }, users] = await Promise.all([
-    sb.from('agents').select('id, name, email, gv_number, account_type, active, tracking_start, last_heartbeat_at, parser_version').order('name'),
+    sb.from('agents').select('id, name, email, gv_number, account_type, active, tracking_start, last_heartbeat_at, last_health, parser_version, token_hint').order('name'),
     rpc('list_users', {}),
   ]);
   const s = state.settings;
@@ -562,18 +573,22 @@ async function renderSettings(view) {
     </div>
 
     <div class="card"><h3>Agents (Google Voice numbers)</h3>
-      <div class="table-wrap"><table><thead><tr><th>Name</th><th>Voice number</th><th>Account</th><th>Tracking since</th><th>Last seen</th><th>Parser</th><th>Active</th><th></th></tr></thead>
+      <p class="small">One agent = one person / Voice number. Each agent gets a personal token. The agent pastes it into the Coco Voice extension (Settings → Connect) — no other setup. Tokens are shown once and stored only as a hash; use <b>New token</b> if one is lost or a laptop changes hands (the old token stops working immediately).</p>
+      <div class="table-wrap"><table><thead><tr><th>Name</th><th>Extension</th><th>Voice number</th><th>Account</th><th>Token</th><th>Tracking since</th><th>Active</th><th></th></tr></thead>
       <tbody>${(agents || []).map((a) => `<tr data-id="${a.id}">
-        <td><input class="aName" value="${esc(a.name)}"></td><td>${esc(a.gv_number || 'auto-detected on first sync')}</td>
+        <td><input class="aName" value="${esc(a.name)}"><div class="small muted">${esc(a.email || '')}</div></td>
+        <td>${connBadge(a)}</td>
+        <td>${esc(a.gv_number || 'detected on first sync')}</td>
         <td><select class="aType">${opt('personal', a.account_type, 'Personal')}${opt('workspace', a.account_type, 'Workspace')}</select></td>
-        <td>${a.tracking_start ? fmtTime(a.tracking_start) : 'on first sync'}</td><td>${ago(a.last_heartbeat_at)}</td><td class="small">${esc(a.parser_version || '')}</td>
+        <td class="small">${a.token_hint ? `…${esc(a.token_hint)}` : '—'}</td>
+        <td>${a.tracking_start ? fmtTime(a.tracking_start) : 'on first sync'}</td>
         <td><input type="checkbox" class="aActive" ${a.active ? 'checked' : ''} style="width:auto"></td>
-        <td><button class="btn dark aSave">Save</button> <button class="btn dark aRotate">New token</button></td></tr>`).join('')}</tbody></table></div>
+        <td><button class="btn dark aSave">Save</button> <button class="btn dark aRotate">New token</button></td></tr>`).join('') || '<tr><td colspan="8" class="empty">No agents yet — add the first one below.</td></tr>'}</tbody></table></div>
       <div class="row" style="margin-top:12px">
-        <div><label>Name</label><input id="nName"></div>
-        <div><label>Email</label><input id="nEmail" type="email"></div>
+        <div><label>Name</label><input id="nName" placeholder="e.g. Sarah Khan"></div>
+        <div><label>Email</label><input id="nEmail" type="email" placeholder="optional"></div>
         <div><label>Account</label><select id="nType"><option value="personal">Personal Google Voice</option><option value="workspace">Google Workspace Voice</option></select></div>
-        <div><button class="btn" id="addAgent">Add agent</button></div>
+        <div><button class="btn" id="addAgent">Add agent &amp; create token</button></div>
       </div>
       <div id="tokenOut"></div>
     </div>
@@ -602,7 +617,21 @@ async function renderSettings(view) {
     toast('Settings saved');
   });
   const showToken = (name, token) => {
-    $('#tokenOut').innerHTML = `<p class="small" style="margin-top:12px">Token for <b>${esc(name)}</b> — copy it now, it is shown only once. Paste it in the extension's Settings.</p><div class="token">${esc(token)}</div>`;
+    $('#tokenOut').innerHTML = `
+      <div class="card token-card">
+        <h3>Token for ${esc(name)}</h3>
+        <p class="small">Copy it now — it is shown only once. Send it to the agent privately (not in a group chat).</p>
+        <div class="token-row"><div class="token" id="tokVal">${esc(token)}</div><button class="btn" id="tokCopy">Copy</button></div>
+        <ol class="small">
+          <li>Agent installs the Coco Voice extension in Chrome.</li>
+          <li>Clicks the extension → <b>Settings</b> → pastes the token → <b>Connect</b>. It shows "Connected as ${esc(name)}".</li>
+          <li>Keeps a Google Voice tab open (pinned). Status here turns green within a few minutes.</li>
+        </ol>
+      </div>`;
+    $('#tokCopy').addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(token); $('#tokCopy').textContent = 'Copied ✓'; } catch { toast('Select the token and copy it manually'); }
+    });
+    $('#tokenOut').scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
   $('#addAgent').addEventListener('click', async () => {
     const name = $('#nName').value.trim();

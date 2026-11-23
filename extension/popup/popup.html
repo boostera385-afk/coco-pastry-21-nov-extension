@@ -10,12 +10,25 @@
   <div class="brand-stripe" aria-hidden="true"><i></i><i></i><i></i></div>
   <header>
     <h1>Coco <span>Voice</span></h1>
-    <div class="seg" id="range">
-      <button data-r="today" class="on">Today</button>
-      <button data-r="7d">7 days</button>
-      <button data-r="30d">30 days</button>
+    <div class="actions">
+      <button class="btn stop" id="pause" title="Pause / resume tracking">Pause</button>
+      <button class="icon-btn" id="close" title="Close panel (tracking keeps running)" aria-label="Close panel">×</button>
     </div>
   </header>
+
+  <section class="card status">
+    <div><span class="dot" id="dot"></span> <b id="statusText">Checking…</b></div>
+    <div class="small muted" id="who"></div>
+    <div class="small muted" id="statusSub"></div>
+    <button class="btn" id="openVoice" hidden>Open Google Voice</button>
+    <button class="btn" id="setup" hidden>Paste your token</button>
+  </section>
+
+  <div class="seg" id="range">
+    <button data-r="today" class="on">Today</button>
+    <button data-r="7d">7 days</button>
+    <button data-r="30d">30 days</button>
+  </div>
 
   <section class="grid">
     <div class="card kpi hero wide">
@@ -28,17 +41,14 @@
     <div class="card kpi g"><div class="ico">✉</div><div class="txt"><div class="label">Texts in</div><div class="value" id="inboundTexts">0</div><div class="sub" id="vm">0 voicemails</div></div></div>
   </section>
 
-  <section class="card status">
-    <div><span class="dot" id="dot"></span> <b id="statusText">Checking…</b></div>
-    <div class="small muted" id="statusSub"></div>
-    <div class="small muted" id="since"></div>
-  </section>
+  <p class="small muted" id="since"></p>
 
   <footer>
     <button class="btn" id="sync">Sync now</button>
     <button class="btn dark" id="openDash">Dashboard</button>
     <a href="#" id="settings" class="small">Settings</a>
   </footer>
+  <p class="small muted hint">Closing this panel keeps tracking on. Use Pause to stop.</p>
   <script type="module" src="popup.js"></script>
 </body>
 </html>

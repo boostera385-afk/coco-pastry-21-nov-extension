@@ -1,16 +1,18 @@
 {
   "manifest_version": 3,
   "name": "Coco Voice Tracker",
-  "version": "0.2.0",
-  "description": "Counts Google Voice outbound reach and inbound activity and syncs it to your team's Supabase.",
-  "minimum_chrome_version": "111",
-  "permissions": ["storage", "alarms"],
-  "host_permissions": ["https://voice.google.com/*", "https://*.supabase.co/*"],
+  "version": "0.3.0",
+  "description": "Counts Google Voice outbound reach and inbound activity and syncs it to your team's Coco Voice dashboard.",
+  "minimum_chrome_version": "116",
+  "permissions": ["storage", "unlimitedStorage", "alarms", "sidePanel", "scripting"],
+  "host_permissions": ["https://voice.google.com/*", "https://yzcjawjncjvqgutpyejm.supabase.co/*"],
   "background": { "service_worker": "src/background.js", "type": "module" },
   "content_scripts": [
     { "matches": ["https://voice.google.com/*"], "js": ["src/interceptor.js"], "world": "MAIN", "run_at": "document_start" },
-    { "matches": ["https://voice.google.com/*"], "js": ["src/content.js"], "run_at": "document_start" }
+    { "matches": ["https://voice.google.com/*"], "js": ["src/content.js"], "run_at": "document_start" },
+    { "matches": ["https://voice.google.com/*"], "js": ["src/widget.js"], "run_at": "document_idle" }
   ],
-  "action": { "default_popup": "popup/popup.html", "default_title": "Coco Voice Tracker" },
+  "side_panel": { "default_path": "popup/popup.html" },
+  "action": { "default_title": "Coco Voice Tracker" },
   "options_page": "options/options.html"
 }

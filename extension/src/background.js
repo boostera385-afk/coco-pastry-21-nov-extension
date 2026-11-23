@@ -1,10 +1,14 @@
 // Service worker: parse -> filter (install day onward) -> dedupe -> queue -> sync to Supabase.
+// Also owns the shared status (badge, side panel, in-page widget) and pause/resume.
 import { parseResponse, parseSendRequest, PARSER_VERSION } from './parser/gv-protojson.js';
-import { DEFAULT_TZ, startOfDay } from './lib/metrics.js';
+import { DEFAULT_TZ, startOfDay, summarize, dayKey } from './lib/metrics.js';
+import { INGEST_URL, TOKEN_RE } from './config.js';
 
-const KEEP_DAYS = 35;          // local history for the popup
+const KEEP_DAYS = 35;          // local history for the panel
 const BATCH = 100;
 const MAX_SAMPLES = 25;        // Phase 0 sample recorder
+const TAB_STALE_MS = 11 * 60e3; // no heartbeat for this long = no Voice tab open
+const VOICE_URL = 'https://voice.google.com/';
 
 const get = (keys) => chrome.storage.local.get(keys);
 const set = (obj) => chrome.storage.local.set(obj);
@@ -13,35 +17,104 @@ const set = (obj) => chrome.storage.local.set(obj);
 let chain = Promise.resolve();
 const serial = (fn) => (chain = chain.then(fn, fn));
 
-// ---------- install: tracking starts at 00:00 of install day (business TZ) ----------
+// ---------- lifecycle ----------
+function setup() {
+  chrome.alarms.create('sync', { periodInMinutes: 1 });
+  chrome.sidePanel?.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+  refreshStatus();
+}
+
 chrome.runtime.onInstalled.addListener(async ({ reason }) => {
   const { trackingStart, timezone } = await get(['trackingStart', 'timezone']);
   if (reason === 'install' || !trackingStart) {
+    // tracking starts at 00:00 of install day (business TZ)
     await set({
       trackingStart: startOfDay(Date.now(), timezone || DEFAULT_TZ),
       installedAt: Date.now(),
       timezone: timezone || DEFAULT_TZ,
+      paused: false,
+      showWidget: true,
       events: {}, queue: [], health: { captures: 0, parsed: 0, unknown: 0, sendChecks: [] },
     });
   }
-  chrome.alarms.create('sync', { periodInMinutes: 1 });
+  setup();
+  injectIntoOpenVoiceTabs();
 });
-chrome.runtime.onStartup.addListener(() => chrome.alarms.create('sync', { periodInMinutes: 1 }));
+chrome.runtime.onStartup.addListener(setup);
 
-// ---------- messages from content script / popup / options ----------
+/** Content scripts only auto-inject on page load; cover Voice tabs that were already open. */
+async function injectIntoOpenVoiceTabs() {
+  const tabs = await chrome.tabs.query({ url: 'https://voice.google.com/*' });
+  for (const t of tabs) {
+    try {
+      await chrome.scripting.executeScript({ target: { tabId: t.id }, files: ['src/interceptor.js'], world: 'MAIN' });
+      await chrome.scripting.executeScript({ target: { tabId: t.id }, files: ['src/content.js', 'src/widget.js'] });
+    } catch { /* tab discarded or not ready: it gets scripts on next load */ }
+  }
+}
+
+// ---------- messages from content script / panel / widget / options ----------
 chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
   (async () => {
-    if (msg.type === 'gv-capture') await serial(() => onCapture(msg));
-    else if (msg.type === 'heartbeat') await set({ lastHeartbeat: Date.now(), heartbeatPending: true });
-    else if (msg.type === 'sync-now') return reply(await sync());
-    else if (msg.type === 'reset-local') { await serial(() => set({ events: {}, queue: [] })); return reply({ ok: true }); }
+    switch (msg.type) {
+      case 'gv-capture': await serial(() => onCapture(msg)); break;
+      case 'heartbeat': await set({ lastHeartbeat: Date.now(), heartbeatPending: true }); await refreshStatus(); break;
+      case 'sync-now': return reply(await sync());
+      case 'set-paused': await setPaused(!!msg.paused); break;
+      case 'connect': return reply(await connect(msg.token));
+      case 'disconnect':
+        await set({ agentToken: null, agentName: null, lastSyncError: null, failures: 0, backoffUntil: 0 });
+        await refreshStatus();
+        break;
+      case 'open-voice': await openVoice(); break;
+      case 'reset-local': await serial(() => set({ events: {}, queue: [] })); break;
+      default: break;
+    }
     reply({ ok: true });
   })().catch((e) => reply({ ok: false, error: String(e) }));
   return true;
 });
 
+async function setPaused(paused) {
+  const { health = {} } = await get('health');
+  health.paused = paused;
+  health.pausedAt = paused ? new Date().toISOString() : null;
+  await set({ paused, pausedAt: paused ? Date.now() : null, health, heartbeatPending: true });
+  await refreshStatus();
+  sync(); // tell the dashboard right away
+}
+
+/** Save the agent's token and verify it against the server right away. */
+async function connect(raw) {
+  const token = String(raw || '').trim();
+  if (!TOKEN_RE.test(token)) return { ok: false, error: 'That doesn\'t look like a Coco token (it starts with coco_).' };
+  const prev = await get(['agentToken']);
+  await set({ agentToken: token, agentName: null, backoffUntil: 0, failures: 0, heartbeatPending: true, lastSyncError: null });
+  const r = await sync();
+  if (!r.ok) {
+    if (/Token rejected/.test(r.error)) await set({ agentToken: prev.agentToken || null, lastSyncError: null });
+    await refreshStatus();
+    return r;
+  }
+  const { agentName } = await get('agentName');
+  await refreshStatus();
+  return { ok: true, agentName };
+}
+
+async function openVoice() {
+  const [tab] = await chrome.tabs.query({ url: 'https://voice.google.com/*' });
+  if (tab) {
+    await chrome.tabs.update(tab.id, { active: true });
+    await chrome.windows.update(tab.windowId, { focused: true });
+  } else {
+    await chrome.tabs.create({ url: VOICE_URL, pinned: true });
+  }
+}
+
+// ---------- capture ----------
 async function onCapture({ url, body, reqBody }) {
-  const st = await get(['agentNumber', 'trackingStart', 'events', 'queue', 'health', 'debugRecord', 'samples']);
+  const st = await get(['agentNumber', 'trackingStart', 'events', 'queue', 'health', 'debugRecord', 'samples', 'paused']);
+  if (st.paused) return; // paused by the agent: capture nothing (reported to the dashboard)
   const health = st.health || { captures: 0, parsed: 0, unknown: 0, sendChecks: [] };
   health.captures++;
   health.lastCaptureAt = Date.now();
@@ -67,10 +140,11 @@ async function onCapture({ url, body, reqBody }) {
   const queue = st.queue || [];
   const since = st.trackingStart || 0;
   const cutoff = Date.now() - KEEP_DAYS * 864e5;
+  let added = 0;
 
   for (const e of events) {
     const at = Date.parse(e.occurred_at);
-    if (at < since) continue;                                // only from install day onward
+    if (!Number.isFinite(at) || at < since) continue;        // only from install day onward
     const sig = `${e.type}|${e.direction}|${e.call_outcome}|${e.duration_sec}|${(e.body || '').length}`;
     const prev = local[e.gv_id];
     if (prev && prev.sig === sig) continue;                  // already have this exact version
@@ -79,6 +153,7 @@ async function onCapture({ url, body, reqBody }) {
       c: e.contact_number, at, o: e.call_outcome, s: e.duration_sec, sig,
     };
     queue.push(e);
+    added++;
     health.parsed++;
     if (e.type === 'unknown') health.unknown++;
     for (const chk of health.sendChecks || []) {
@@ -89,27 +164,60 @@ async function onCapture({ url, body, reqBody }) {
   for (const [id, v] of Object.entries(local)) if (v.at < cutoff) delete local[id];
 
   await set({ events: local, queue, health });
+  if (added) await refreshStatus();
   if (queue.length >= 50) sync();
 }
 
+// ---------- shared status: badge + summary for panel and widget ----------
+async function refreshStatus() {
+  const st = await get(['events', 'timezone', 'agentToken', 'lastHeartbeat', 'lastSyncError', 'queue', 'paused', 'lastSyncAt']);
+  const tz = st.timezone || DEFAULT_TZ;
+  const today = dayKey(Date.now(), tz);
+  const summary = summarize(Object.values(st.events || {}), today, today, tz);
+
+  let level = 'ok';
+  let text = 'Tracking';
+  if (!st.agentToken) { level = 'bad'; text = 'Not connected — paste your token in Settings'; }
+  else if (st.paused) { level = 'paused'; text = 'Paused'; }
+  else if (!st.lastHeartbeat || Date.now() - st.lastHeartbeat > TAB_STALE_MS) { level = 'warn'; text = 'Open Google Voice to track'; }
+  else if (st.lastSyncError) { level = 'bad'; text = 'Sync error — retrying'; }
+  else if ((st.queue || []).length) { level = 'warn'; text = `${st.queue.length} waiting to sync`; }
+
+  await set({ status: { level, text, at: Date.now() }, summaryToday: summary });
+
+  const colors = { ok: '#00843d', warn: '#ffba00', bad: '#cc3433', paused: '#777777' };
+  await chrome.action.setBadgeBackgroundColor({ color: colors[level] });
+  await chrome.action.setBadgeTextColor?.({ color: level === 'warn' ? '#000000' : '#ffffff' });
+  await chrome.action.setBadgeText({ text: level === 'paused' ? 'II' : level === 'bad' ? '!' : String(summary.outboundReaches || '') });
+  await chrome.action.setTitle({ title: `Coco Voice — ${text} · ${summary.outboundReaches} reaches today` });
+}
+
+chrome.storage.onChanged.addListener((c, area) => {
+  if (area === 'local' && (c.agentToken || c.lastSyncError || c.timezone || c.trackingStart)) refreshStatus();
+});
+
 // ---------- sync ----------
-chrome.alarms.onAlarm.addListener((a) => { if (a.name === 'sync') sync(); });
+chrome.alarms.onAlarm.addListener(async (a) => {
+  if (a.name !== 'sync') return;
+  await sync();
+  await refreshStatus();
+});
 
 let syncing = false;
 async function sync() {
   if (syncing) return { ok: false, error: 'busy' };
   syncing = true;
   try {
-    const st = await get(['supabaseUrl', 'agentToken', 'queue', 'agentNumber', 'heartbeatPending', 'health', 'backoffUntil', 'trackingStart']);
-    if (!st.supabaseUrl || !st.agentToken) return { ok: false, error: 'Not configured' };
-    if (st.backoffUntil && Date.now() < st.backoffUntil) return { ok: false, error: 'backoff' };
+    const st = await get(['agentToken', 'queue', 'agentNumber', 'heartbeatPending', 'health', 'backoffUntil', 'trackingStart']);
+    if (!st.agentToken) return { ok: false, error: 'Not connected' };
+    if (st.backoffUntil && Date.now() < st.backoffUntil) return { ok: false, error: 'Waiting to retry' };
     if (!(st.queue || []).length && !st.heartbeatPending) return { ok: true, sent: 0 };
 
     let sent = 0;
     let batch;
     do {
       batch = ((await get('queue')).queue || []).slice(0, BATCH);
-      const res = await fetch(`${st.supabaseUrl.replace(/\/$/, '')}/functions/v1/ingest`, {
+      const res = await fetch(INGEST_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-agent-token': st.agentToken },
         body: JSON.stringify({
@@ -119,9 +227,12 @@ async function sync() {
           heartbeat: { at: new Date().toISOString(), health: { ...st.health, sendChecks: undefined } },
           events: batch,
         }),
+        signal: AbortSignal.timeout(30000),
       });
-      if (!res.ok) throw new Error(`ingest ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      if (res.status === 401) throw new Error('Token rejected — ask your manager for a new token');
+      if (!res.ok) throw new Error(`Server error ${res.status}`);
       const out = await res.json();
+      if (out.agent?.name) await set({ agentName: out.agent.name });
       if (out.config) {
         const upd = { timezone: out.config.timezone };
         if (out.config.tracking_start) upd.trackingStart = Math.max(Date.parse(out.config.tracking_start), 0);
@@ -140,8 +251,9 @@ async function sync() {
   } catch (e) {
     const { failures = 0 } = await get('failures');
     const wait = Math.min(30 * 60e3, 60e3 * 2 ** failures);
-    await set({ lastSyncError: String(e.message || e), failures: failures + 1, backoffUntil: Date.now() + wait });
-    return { ok: false, error: String(e.message || e) };
+    const message = e.name === 'TimeoutError' ? 'Server did not respond' : e instanceof TypeError ? 'No internet connection' : String(e.message || e);
+    await set({ lastSyncError: message, failures: failures + 1, backoffUntil: Date.now() + wait });
+    return { ok: false, error: message };
   } finally {
     syncing = false;
   }

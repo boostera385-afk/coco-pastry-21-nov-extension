@@ -81,3 +81,6 @@ tr.click { cursor: pointer; } tr.click:hover td { background: var(--surface-2); 
 .row > div { flex: 1; min-width: 160px; }
 .token { font-family: ui-monospace, monospace; background: #000; border: 1px dashed var(--accent); padding: 10px; border-radius: 8px; word-break: break-all; color: var(--accent); }
 .toast { position: fixed; bottom: 20px; right: 20px; background: var(--surface-2); border: 1px solid var(--accent); color: var(--text); padding: 10px 14px; border-radius: 8px; }
+.token-card { margin-top: 14px; border-color: var(--yellow); }
+.token-row { display: flex; gap: 8px; align-items: center; margin: 10px 0; }
+.token-row .token { flex: 1; }

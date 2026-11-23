@@ -1,13 +1,16 @@
 import { summarize, dayKey, addDays, DEFAULT_TZ } from '../src/lib/metrics.js';
+import { DASHBOARD_URL } from '../src/config.js';
 
 const $ = (id) => document.getElementById(id);
 let range = 'today';
+let paused = false;
 
 const ago = (ms) => {
   if (!ms) return 'never';
   const m = Math.round((Date.now() - ms) / 60e3);
   return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`;
 };
+const DOT = { ok: 'ok', warn: 'warn', bad: 'bad', paused: '' };
 
 async function render() {
   const st = await chrome.storage.local.get(null);
@@ -23,23 +26,22 @@ async function render() {
   $('callsInTile').classList.toggle('g', !r.missedCalls);
   $('vm').textContent = `${r.voicemails} voicemails`;
 
-  const configured = st.supabaseUrl && st.agentToken;
-  const tabOpen = st.lastHeartbeat && Date.now() - st.lastHeartbeat < 11 * 60e3;
-  const queue = (st.queue || []).length;
-  let cls = 'ok';
-  let text = 'Tracking & synced';
-  if (!configured) { cls = 'bad'; text = 'Not set up — open Settings'; }
-  else if (!tabOpen) { cls = 'warn'; text = 'Open voice.google.com to track'; }
-  else if (st.lastSyncError) { cls = 'bad'; text = 'Sync error — will retry'; }
-  else if (queue) { cls = 'warn'; text = `${queue} waiting to sync`; }
-  $('dot').className = `dot ${cls}`;
-  $('statusText').textContent = text;
-  $('statusSub').textContent = `Last sync ${ago(st.lastSyncAt)}${st.lastSyncError ? ' · ' + st.lastSyncError : ''}`;
+  const level = st.status?.level || (st.agentToken ? 'warn' : 'bad');
+  $('dot').className = `dot ${DOT[level] ?? ''}`;
+  $('statusText').textContent = st.status?.text || 'Starting…';
+  $('who').textContent = st.agentToken ? `Connected as ${st.agentName || 'agent'}${st.agentNumber ? ` · ${st.agentNumber}` : ''}` : '';
+  $('statusSub').textContent = st.agentToken ? `Last sync ${ago(st.lastSyncAt)}${st.lastSyncError ? ` · ${st.lastSyncError}` : ''}` : '';
+  $('openVoice').hidden = level !== 'warn' || !/Open Google Voice/.test(st.status?.text || '');
+  $('setup').hidden = !!st.agentToken;
   $('since').textContent = st.trackingStart
     ? `Tracking since ${new Date(st.trackingStart).toLocaleDateString('en-US', { timeZone: tz })} · ${tz} time`
     : '';
-  $('sync').disabled = !configured;
-  $('openDash').disabled = !st.dashboardUrl;
+
+  paused = !!st.paused;
+  $('pause').textContent = paused ? 'Resume' : 'Pause';
+  $('pause').className = `btn ${paused ? 'go' : 'stop'}`;
+  $('pause').disabled = !st.agentToken;
+  $('sync').disabled = !st.agentToken;
 }
 
 $('range').addEventListener('click', (e) => {
@@ -49,6 +51,17 @@ $('range').addEventListener('click', (e) => {
   document.querySelectorAll('#range button').forEach((x) => x.classList.toggle('on', x === b));
   render();
 });
+$('pause').addEventListener('click', async () => {
+  if (!paused && !confirm('Pause tracking? Live capture stops until you resume, and your manager will see that tracking is paused. Activity from the pause can still be counted from Voice history after you resume.')) return;
+  await chrome.runtime.sendMessage({ type: 'set-paused', paused: !paused });
+});
+$('close').addEventListener('click', async () => {
+  try {
+    const win = await chrome.windows.getCurrent();
+    if (chrome.sidePanel?.close) { await chrome.sidePanel.close({ windowId: win.id }); return; }
+  } catch { /* fall back below */ }
+  window.close();
+});
 $('sync').addEventListener('click', async () => {
   $('sync').disabled = true;
   $('sync').textContent = 'Syncing…';
@@ -56,10 +69,9 @@ $('sync').addEventListener('click', async () => {
   $('sync').textContent = 'Sync now';
   render();
 });
-$('openDash').addEventListener('click', async () => {
-  const { dashboardUrl } = await chrome.storage.local.get('dashboardUrl');
-  if (dashboardUrl) chrome.tabs.create({ url: dashboardUrl });
-});
+$('openVoice').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'open-voice' }));
+$('setup').addEventListener('click', () => chrome.runtime.openOptionsPage());
+$('openDash').addEventListener('click', () => chrome.tabs.create({ url: DASHBOARD_URL }));
 $('settings').addEventListener('click', (e) => { e.preventDefault(); chrome.runtime.openOptionsPage(); });
 chrome.storage.onChanged.addListener(render);
 render();
