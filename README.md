@@ -70,3 +70,11 @@ texts/calls/voicemail/unknown capture, no history before connecting, every call/
 no duplicates on reload, pause/resume, sync, dashboard metrics, reply rate/time, live dashboard UI,
 transcript security (agent vs manager vs anonymous) and revoked tokens. SMS format is verified from a
 live account; call/voicemail codes are still a best guess until real calls are captured.
+
+## Releasing an extension update
+
+1. Bump `version` in `extension/manifest.json`.
+2. `node scripts/build-extension.mjs "What changed" "Another change"` — builds `dashboard/downloads/coco-voice-extension.zip` and `dashboard/extension.json`.
+3. Deploy the dashboard (`npx vercel deploy --prod` in `dashboard/`).
+
+Within 6 hours every installed extension shows **Update available**. The dashboard shows a banner to the agent and admin, and the **Extension** page lists each agent's installed version. Agents unzip the new version over the same folder and click reload on `chrome://extensions`. Using the same folder keeps the extension id, so their token stays connected.
