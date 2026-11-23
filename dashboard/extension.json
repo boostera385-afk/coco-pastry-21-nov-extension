@@ -1,0 +1,21 @@
+{
+  "version": "0.7.0",
+  "released": "2026-11-23T11:18:44.304Z",
+  "download": "/downloads/coco-voice-extension.zip",
+  "versioned": "/downloads/coco-voice-extension-0.7.0.zip",
+  "size": 39862,
+  "sha256": "d0aaf1aaaae46e487247ed5aba7a896a1fcf1fbf9c2000f15eb719e911702022",
+  "min_chrome": "116",
+  "history": [
+    {
+      "version": "0.7.0",
+      "released": "2026-11-23T11:18:44.304Z",
+      "notes": [
+        "Update notice in the side panel and Settings when a newer version is published",
+        "Open Google Voice: OFF badge, button, Alt+Shift+V shortcut and right-click menu",
+        "Voicemail audio copied to the dashboard (admin can switch it off)",
+        "Voicemails count as missed incoming calls"
+      ]
+    }
+  ]
+}

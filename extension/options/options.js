@@ -1,4 +1,5 @@
 import { DEFAULT_TZ } from '../src/lib/metrics.js';
+import { DASHBOARD_URL } from '../src/config.js';
 
 const $ = (id) => document.getElementById(id);
 let editing = false;
@@ -17,6 +18,11 @@ async function load() {
   $('agentMeta').textContent = [st.agentNumber && `Voice number ${st.agentNumber}`, st.lastSyncAt && `last sync ${new Date(st.lastSyncAt).toLocaleTimeString()}`, st.lastSyncError].filter(Boolean).join(' · ');
 
   $('showWidget').checked = st.showWidget !== false;
+  const mine = chrome.runtime.getManifest().version;
+  const up = st.latestExtension;
+  $('verLine').innerHTML = up?.updateAvailable && up.version !== mine
+    ? `Version ${mine} · <b style="color:var(--yellow)">update available: v${up.version}</b> · <a href="${DASHBOARD_URL}/#/extension" target="_blank" rel="noopener">How to update</a>`
+    : `Version ${mine}${up ? ' · up to date' : ''}`;
   $('autoOpenVoice').checked = !!st.autoOpenVoice;
   $('debugRecord').checked = !!st.debugRecord;
   const tz = st.timezone || DEFAULT_TZ;

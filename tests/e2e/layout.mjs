@@ -18,7 +18,7 @@ const URL_ = env.SUPABASE_URL;
 const ANON = fs.readFileSync(path.join(DASH, 'config.js'), 'utf8').match(/eyJ[^']+/)[0];
 const PORT = 9334; const WEB = 5599;
 const WIDTHS = [1400, 960, 760, 390];
-const PAGES = ['overview', 'contacts', 'conversations', 'analysis', 'settings', 'account'];
+const PAGES = ['overview', 'contacts', 'conversations', 'analysis', 'settings', 'extension', 'account'];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function waitFor(fn, ms = 15000) { const end = Date.now() + ms; while (Date.now() < end) { try { const v = await fn(); if (v) return v; } catch { /* retry */ } await sleep(250); } return null; }
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json' };
@@ -51,6 +51,12 @@ try {
   await waitFor(() => cdp.eval(s, "!!document.getElementById('pwForm') && document.readyState === 'complete'"), 20000);
   await cdp.eval(s, `document.getElementById('email').value = ${JSON.stringify(email)}; document.getElementById('password').value = ${JSON.stringify(pw)}; document.querySelector('#pwForm button[type=submit]').click(); true`);
   if (!await waitFor(() => cdp.eval(s, "!document.getElementById('app').hidden && !!document.querySelector('.kpis')"), 20000)) throw new Error('sign-in failed');
+  if (process.env.SHOTS) { // first sign-in guide
+    await waitFor(() => cdp.eval(s, "!!document.querySelector('dialog#setupGuide[open]')"), 5000);
+    const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' }, s);
+    fs.writeFileSync(path.join(process.env.SHOTS, 'guide.png'), Buffer.from(data, 'base64'));
+  }
+  await cdp.eval(s, "document.getElementById('guideLater')?.click(); true");
 
   for (const w of WIDTHS) {
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: w, height: 900, deviceScaleFactor: 1, mobile: w < 500 }, s);
@@ -68,9 +74,9 @@ try {
       const ok = r.sw <= r.W + 1 && !r.wide.length;
       if (!ok) fails++;
       console.log(`${ok ? 'PASS' : 'FAIL'}  ${String(w).padStart(4)}px ${p.padEnd(13)}${ok ? '' : ` scrollWidth ${r.sw} > ${r.W}  ${r.wide.join(' | ')}`}`);
-      if (process.env.SHOTS && p === 'overview') {
+      if (process.env.SHOTS && (p === 'overview' || (p === 'extension' && w === 1400))) {
         const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' }, s);
-        fs.writeFileSync(path.join(process.env.SHOTS, `overview-${w}.png`), Buffer.from(data, 'base64'));
+        fs.writeFileSync(path.join(process.env.SHOTS, `${p}-${w}.png`), Buffer.from(data, 'base64'));
       }
     }
   }

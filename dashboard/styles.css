@@ -124,3 +124,25 @@ table.wrap td { white-space: normal; overflow-wrap: anywhere; }
 audio.rec { width: 100%; max-width: 320px; height: 32px; margin-top: 6px; }
 .note { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line); border-left: 3px solid var(--yellow); border-radius: 8px; background: var(--surface-2); line-height: 1.5; }
 .check { display: flex; gap: 8px; align-items: center; text-transform: none; letter-spacing: 0; font-size: 14px; }
+
+/* extension page, update banner, setup guide */
+.update-banner { background: #1d1600; border-bottom: 1px solid var(--yellow); color: var(--text); padding: 10px 24px; font-size: 14px; }
+.update-banner a { color: var(--yellow); font-weight: 600; }
+.ext-head { display: flex; gap: 14px; align-items: center; }
+.ext-head img { border-radius: 12px; }
+ol.steps { margin: 6px 0 0; padding-left: 20px; line-height: 1.6; }
+.release { border-top: 1px solid var(--line); padding: 10px 0; }
+.release:first-of-type { border-top: 0; }
+.release ul { margin: 6px 0 0; padding-left: 20px; }
+code { font: 12px ui-monospace, monospace; background: var(--surface-2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; color: var(--text); }
+kbd { font: 600 11px var(--body); background: var(--surface-2); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; color: var(--text); }
+dialog.guide { width: min(560px, calc(100vw - 32px)); background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius); padding: 0 24px 20px; overflow: hidden; }
+dialog.guide::backdrop { background: rgba(0, 0, 0, .7); }
+dialog.guide .brand-stripe { margin: 0 -24px 18px; }
+dialog.guide h2 { margin: 0 0 4px; }
+ol.guide-steps { margin: 14px 0 18px; padding-left: 22px; display: grid; gap: 12px; }
+ol.guide-steps li::marker { color: var(--yellow); font-weight: 700; }
+pre.slack-preview { white-space: pre-wrap; font: 12px/1.5 ui-monospace, monospace; background: #000; border: 1px solid var(--line); border-radius: 8px; padding: 10px; max-height: 260px; overflow: auto; color: var(--text); }
+@media (max-width: 760px) { .update-banner { padding: 10px 16px; } }
+.two.top { align-items: start; }
+.ext-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }

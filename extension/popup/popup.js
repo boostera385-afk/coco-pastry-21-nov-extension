@@ -38,6 +38,14 @@ async function render() {
   $('openVoiceBox').hidden = !st.agentToken || st.paused || !(st.status?.voiceOpen === false || /Open Google Voice/i.test(st.status?.text || ''));
   $('goVoice').classList.toggle('attn', st.status?.voiceOpen === false && !!st.agentToken && !st.paused);
   $('setup').hidden = !!st.agentToken;
+  const up = st.latestExtension;
+  const mine = chrome.runtime.getManifest().version;
+  const showUp = !!up?.updateAvailable && up.version !== mine;
+  $('updateBox').hidden = !showUp;
+  if (showUp) {
+    $('updateVer').textContent = `v${up.version} (you have v${mine})`;
+    $('updateNotes').textContent = (up.notes || []).join(' · ');
+  }
   $('reloadVoice').hidden = !/reload Google Voice/i.test(st.status?.text || '');
 
   paused = !!st.paused;
@@ -74,6 +82,7 @@ $('sync').addEventListener('click', async () => {
 });
 $('openVoice').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'open-voice' }));
 $('goVoice').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'open-voice' }));
+$('updateHow').addEventListener('click', () => chrome.tabs.create({ url: `${DASHBOARD_URL}/#/extension` }));
 $('setup').addEventListener('click', () => chrome.runtime.openOptionsPage());
 $('reloadVoice').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'reload-voice' }));
 $('openDash').addEventListener('click', () => chrome.tabs.create({ url: DASHBOARD_URL }));

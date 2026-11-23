@@ -20,6 +20,8 @@ const serial = (fn) => (chain = chain.then(fn, fn));
 // ---------- lifecycle ----------
 function setup() {
   chrome.alarms.create('sync', { periodInMinutes: 1 });
+  chrome.alarms.create('update-check', { periodInMinutes: 360, delayInMinutes: 1 });
+  checkForUpdate();
   chrome.sidePanel?.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
   // right-click on the toolbar icon
   chrome.contextMenus?.removeAll(() => {
@@ -27,6 +29,24 @@ function setup() {
     chrome.contextMenus.create({ id: 'open-dashboard', title: 'Open Coco dashboard', contexts: ['action'] });
   });
   refreshStatus();
+}
+
+/** Newer extension published on the dashboard? (unpacked extensions can't auto-update, so tell the agent) */
+export function newer(a, b) {
+  const x = String(a || '0').split('.').map(Number); const y = String(b || '0').split('.').map(Number);
+  for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
+  return false;
+}
+async function checkForUpdate() {
+  try {
+    const r = await fetch(`${DASHBOARD_URL}/extension.json`, { cache: 'no-store', signal: AbortSignal.timeout(15000) });
+    if (!r.ok) return;
+    const info = await r.json();
+    if (!/^\d+\.\d+\.\d+$/.test(info.version || '')) return;
+    const current = chrome.runtime.getManifest().version;
+    await set({ latestExtension: { version: info.version, released: info.released, notes: (info.history?.[0]?.notes || []).slice(0, 5),
+      checkedAt: Date.now(), updateAvailable: newer(info.version, current) } });
+  } catch { /* offline: try again later */ }
 }
 
 chrome.contextMenus?.onClicked.addListener((info) => {
@@ -335,6 +355,7 @@ chrome.storage.onChanged.addListener((c, area) => {
 
 // ---------- sync ----------
 chrome.alarms.onAlarm.addListener(async (a) => {
+  if (a.name === 'update-check') { checkForUpdate(); return; }
   if (a.name !== 'sync') return;
   await sync();
   await refreshStatus();

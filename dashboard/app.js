@@ -99,10 +99,12 @@ async function boot() {
   }
   state.role = prof.role;
   state.agentId = prof.agent_id;
-  const [{ data: settings }, { data: agents }] = await Promise.all([
+  const [{ data: settings }, { data: agents }, ext] = await Promise.all([
     sb.from('app_settings').select('*').eq('id', 1).single(),
     sb.from('agents').select('id, name, active').order('name'),
+    fetch('extension.json', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
   ]);
+  state.ext = ext;
   state.settings = settings;
   state.agents = agents || [];
 
@@ -114,9 +116,11 @@ async function boot() {
     + state.agents.map((a) => `<option value="${a.id}">${esc(a.name)}${a.active ? '' : ' (inactive)'}</option>`).join('');
   $('#agentFilter').hidden = !isMgr();
 
-  const links = [['overview', 'Overview'], ...(isMgr() ? [['contacts', 'Contacts'], ['conversations', 'Conversations'], ['analysis', 'Analysis'], ['settings', 'Settings']] : []), ['account', 'Account']];
+  const links = [['overview', 'Overview'], ...(isMgr() ? [['contacts', 'Contacts'], ['conversations', 'Conversations'], ['analysis', 'Analysis'], ['settings', 'Settings']] : []), ['extension', 'Extension'], ['account', 'Account']];
   $('#navLinks').innerHTML = links.map(([k, l]) => `<a href="#/${k}" data-k="${k}">${l}</a>`).join('');
   route();
+  renderUpdateBanner().catch(() => {});
+  showSetupGuide();
 }
 
 function showLogin(text = '', signedInNoAccess = false) {
@@ -235,7 +239,7 @@ async function route() {
   computeRange();
   const [, page = 'overview', arg] = location.hash.split('/');
   document.querySelectorAll('#navLinks a').forEach((a) => a.classList.toggle('on', a.dataset.k === page));
-  $('#filters').hidden = page === 'settings' || page === 'account';
+  $('#filters').hidden = page === 'settings' || page === 'account' || page === 'extension';
   const view = $('#view');
   view.innerHTML = '<div class="empty">Loading…</div>';
   try {
@@ -244,6 +248,7 @@ async function route() {
     else if (page === 'analysis' && isMgr()) await renderAnalysis(view);
     else if (page === 'settings' && isMgr()) await renderSettings(view);
     else if (page === 'account') await renderAccount(view);
+    else if (page === 'extension') await renderExtension(view);
     else await renderOverview(view);
   } catch (err) {
     view.innerHTML = `<div class="card empty">Something went wrong: ${esc(err.message || err)}</div>`;
@@ -615,6 +620,177 @@ async function renderDetail(key, head) {
     <div class="timeline">${rows || '<div class="empty">Empty</div>'}</div>`;
 }
 
+// ---------- extension: download, versions, updates (everyone) ----------
+const semverNewer = (a, b) => {
+  const x = String(a || '0').split('.').map(Number); const y = String(b || '0').split('.').map(Number);
+  for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
+  return false;
+};
+const extUrl = (p) => new URL(p || '/downloads/coco-voice-extension.zip', location.origin).href;
+/** 'current' | 'outdated' | 'none' for an agent's installed extension. */
+const extState = (a) => {
+  const v = a?.last_health?.extensionVersion;
+  if (!v) return 'none';
+  return state.ext && semverNewer(state.ext.version, v) ? 'outdated' : 'current';
+};
+const extChip = (a) => {
+  const v = a?.last_health?.extensionVersion;
+  const s = extState(a);
+  return s === 'none' ? '<span class="badge">not installed yet</span>'
+    : s === 'outdated' ? `<span class="badge medium" title="Latest is v${esc(state.ext.version)}">v${esc(v)} · update</span>`
+      : `<span class="badge good">v${esc(v)} · latest</span>`;
+};
+
+async function loadAgentHealth() {
+  const { data } = await sb.from('agents').select('id, name, active, last_health, last_heartbeat_at, gv_number').order('name');
+  state.agentHealth = data || [];
+  return state.agentHealth;
+}
+
+/** Top banner: agent -> own extension is old; admin -> some agents run an old version. */
+async function renderUpdateBanner() {
+  const el = $('#updateBanner');
+  if (!state.ext) { el.hidden = true; return; }
+  const agents = await loadAgentHealth();
+  let html = '';
+  if (isMgr()) {
+    const old = agents.filter((a) => a.active && extState(a) === 'outdated');
+    if (old.length) html = `${old.length} agent${old.length > 1 ? 's run' : ' runs'} an old Coco extension (${old.map((a) => esc(a.name)).join(', ')}). Latest is <b>v${esc(state.ext.version)}</b>. <a href="#/extension">See versions →</a>`;
+  } else {
+    const me = agents.find((a) => a.id === state.agentId);
+    if (me && extState(me) === 'outdated') html = `Your Coco extension is <b>v${esc(me.last_health.extensionVersion)}</b> — <b>v${esc(state.ext.version)}</b> is available. <a href="#/extension">Update now →</a>`;
+  }
+  el.innerHTML = html;
+  el.hidden = !html;
+}
+
+async function renderExtension(view) {
+  const x = state.ext;
+  const agents = await loadAgentHealth();
+  const me = agents.find((a) => a.id === state.agentId);
+  const size = x?.size ? `${Math.max(1, Math.round(x.size / 1024))} KB` : '';
+  view.innerHTML = `
+    <div class="section-title"><h2>Chrome extension</h2></div>
+    <div class="two top">
+      <div class="card">
+        ${x ? `
+        <div class="ext-head">
+          <img src="icons/icon-192.png" alt="" width="56" height="56">
+          <div><h3 style="margin:0">Coco Voice Tracker <span class="badge good">v${esc(x.version)}</span></h3>
+            <div class="small muted">Released ${fmtTime(x.released)}${size ? ` · ${size}` : ''}${x.min_chrome ? ` · Chrome ${esc(x.min_chrome)}+` : ''}</div></div>
+        </div>
+        ${!isMgr() ? `<p style="margin:12px 0 0">Your installed version: ${me ? extChip(me) : '<span class="badge">not linked to an agent</span>'}</p>` : ''}
+        <div class="ext-actions">
+          <a class="btn" href="${esc(extUrl(x.download))}" download>Download extension (.zip)</a>
+          <button class="btn dark" id="cpExtLink">Copy download link</button>
+        </div>
+        <p class="small muted" style="margin-top:8px">SHA-256 <code>${esc(x.sha256.slice(0, 16))}…</code> · direct link always points to the latest version.</p>`
+        : '<div class="empty">Extension package not published yet.</div>'}
+      </div>
+      <div class="card">
+        <h3>First install (2 minutes)</h3>
+        <ol class="steps">
+          <li>Download the .zip and <b>unzip</b> it to a folder you keep, e.g. <code>Documents\\coco-voice-extension</code>.</li>
+          <li>Open <code>chrome://extensions</code> and switch on <b>Developer mode</b> (top right).</li>
+          <li>Click <b>Load unpacked</b> → choose the <code>coco-voice-extension</code> folder.</li>
+          <li>Pin it: puzzle icon → pin <b>Coco Voice Tracker</b>.</li>
+          <li>Click the Coco icon → <b>Settings</b> → paste the token your admin sent → <b>Connect</b>.</li>
+          <li>Open Google Voice (business account) and keep the tab open — <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd>.</li>
+        </ol>
+        <h3 style="margin-top:16px">Update to a new version</h3>
+        <ol class="steps">
+          <li>Download the new .zip and unzip it <b>over the same folder</b> (replace the files).</li>
+          <li>On <code>chrome://extensions</code> click the <b>reload ⟳</b> icon on Coco Voice Tracker.</li>
+          <li>Reload the Google Voice tab. Your token and numbers stay — no need to connect again.</li>
+        </ol>
+        <p class="small muted">Using a different folder gives Chrome a new extension id, and the token would have to be pasted again.</p>
+      </div>
+    </div>
+    ${isMgr() ? `
+    <div class="card"><h3>Agents' installed versions</h3>
+      <div class="table-wrap"><table><thead><tr><th>Agent</th><th>Voice number</th><th>Extension</th><th>Last check-in</th></tr></thead>
+      <tbody>${agents.map((a) => `<tr><td>${esc(a.name)}${a.active ? '' : ' <span class="small muted">(inactive)</span>'}</td><td>${esc(a.gv_number || '—')}</td>
+        <td>${extChip(a)}</td><td>${a.last_heartbeat_at ? ago(a.last_heartbeat_at) : '<span class="small muted">never</span>'}</td></tr>`).join('')}</tbody></table></div>
+    </div>` : ''}
+    ${x?.history?.length ? `
+    <div class="card"><h3>What's new</h3>
+      ${x.history.map((h) => `<div class="release"><b>v${esc(h.version)}</b> <span class="small muted">${fmtTime(h.released)}</span>
+        ${h.notes?.length ? `<ul>${h.notes.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>` : ''}</div>`).join('')}
+    </div>` : ''}`;
+  if (x) copyBtn('cpExtLink', extUrl(x.download));
+}
+
+// ---------- first sign-in: short setup guide (once per user; reopen from Account) ----------
+function showSetupGuide(force = false) {
+  if (!force && state.user?.user_metadata?.onboarded) return;
+  document.getElementById('setupGuide')?.remove();
+  const agent = !isMgr();
+  const steps = agent ? [
+    ['Install the Chrome extension', `Download it below, unzip, then <code>chrome://extensions</code> → Developer mode → <b>Load unpacked</b>.`],
+    ['Connect it with your token', 'Click the Coco icon → <b>Settings</b> → paste the token from your admin\'s message → <b>Connect</b>. Tracking starts at that moment (no old history).'],
+    ['Keep Google Voice open', 'Use your business Google Voice account in Chrome and keep the tab open. Shortcut: <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd>. Pause anytime from the panel.'],
+    ['See your numbers here', 'Every call and text you make counts under each contact, in Pakistan time. The side panel shows the same numbers.'],
+  ] : [
+    ['Create your team', '<b>Settings → Users</b>: create each agent. Use <b>Copy message for Slack</b> and send it privately.'],
+    ['Agents install the extension', 'They follow the message: download, load unpacked, paste token, keep Google Voice open.'],
+    ['Watch the results', '<b>Overview</b> for totals, <b>Conversations</b> for every call and text per contact, <b>Analysis</b> for issues to review.'],
+    ['Set your rules', '<b>Settings</b>: business time zone, analysis thresholds, conversation length and voicemail/recording storage.'],
+  ];
+  const d = document.createElement('dialog');
+  d.id = 'setupGuide';
+  d.className = 'guide';
+  d.setAttribute('aria-labelledby', 'guideTitle');
+  d.innerHTML = `
+    <div class="brand-stripe" aria-hidden="true"><i></i><i></i><i></i></div>
+    <h2 id="guideTitle">Welcome to Coco Voice${state.user?.email ? `, ${esc(state.user.email.split('@')[0])}` : ''}</h2>
+    <p class="small muted">${agent ? 'Four steps to start tracking your calls and texts.' : 'Four steps to get your team tracking.'}</p>
+    <ol class="guide-steps">${steps.map(([t, b]) => `<li><b>${t}</b><div class="small">${b}</div></li>`).join('')}</ol>
+    <div class="row" style="justify-content:flex-end">
+      ${state.ext ? `<a class="btn dark" href="${esc(extUrl(state.ext.download))}" download>Download extension v${esc(state.ext.version)}</a>` : ''}
+      <button class="btn dark" id="guideLater">Later</button>
+      <button class="btn" id="guideDone" autofocus>Got it</button>
+    </div>`;
+  document.body.append(d);
+  const close = async (remember) => {
+    d.close(); d.remove();
+    if (remember && !state.user?.user_metadata?.onboarded) {
+      const { data } = await sb.auth.updateUser({ data: { onboarded: true } });
+      if (data?.user) state.user = data.user;
+    }
+  };
+  $('#guideDone').addEventListener('click', () => close(true));
+  $('#guideLater').addEventListener('click', () => close(false));
+  d.addEventListener('cancel', () => close(false));
+  d.showModal();
+}
+
+/** Ready-to-paste Slack message for a new user (Slack mrkdwn). Without an email = extension token only. */
+function slackMessage({ name, email, role, password, token }) {
+  let step = 0;
+  const h = (t) => `*${++step}. ${t}*`;
+  const lines = [`:wave: Hi *${name || (email || '').split('@')[0] || 'there'}*, your *Coco Voice* access is ready.`];
+  if (email) {
+    lines.push('', h('Sign in to the dashboard'), `• ${location.origin}`, `• Email: \`${email}\``,
+      ...(password ? [`• Temporary password: \`${password}\` _(you'll choose your own at first sign-in)_`] : []));
+  }
+  if (token || role === 'agent') {
+    lines.push('', h('Install the Chrome extension'),
+      `• Download: ${state.ext ? extUrl(state.ext.download) : `${location.origin}/#/extension`}${state.ext ? ` (v${state.ext.version})` : ''}`,
+      '• Unzip → open `chrome://extensions` → turn on *Developer mode* → *Load unpacked* → choose the `coco-voice-extension` folder',
+      '• Pin it, click the Coco icon → *Settings* → paste your token → *Connect*');
+    if (token) lines.push(`• Token: \`${token}\``);
+    lines.push('', h('Start tracking'),
+      '• Open Google Voice (business account) and keep the tab open — shortcut `Alt+Shift+V`',
+      '• Every call and text counts from the moment you connect (Pakistan time)',
+      `• Full guide: ${location.origin}/#/extension`);
+  }
+  lines.push('', '_Please keep this message private — it contains your login details._');
+  return lines.join('\n');
+}
+
+// exposed for the end-to-end test only (no secrets)
+window.__coco = { slackMessage };
+
 // ---------- account (everyone) ----------
 async function renderAccount(view) {
   view.innerHTML = `
@@ -622,6 +798,7 @@ async function renderAccount(view) {
     <div class="card" style="max-width:460px">
       <h3>${esc(state.user.email)}</h3>
       <p class="small">Role: ${esc(state.role)}. You can sign in with a password, or with an email link / code.</p>
+      <p><button class="btn dark" id="openGuide" type="button">Open setup guide</button> <a class="btn dark" href="#/extension">Extension &amp; updates</a></p>
       <form id="acctPw">
         <label for="aPw">New password (min 6, letters + numbers)</label><input id="aPw" type="password" autocomplete="new-password" minlength="6">
         <label for="aPw2">Repeat new password</label><input id="aPw2" type="password" autocomplete="new-password" minlength="6">
@@ -629,6 +806,7 @@ async function renderAccount(view) {
       </form>
       <p class="small" id="acctMsg"></p>
     </div>`;
+  $('#openGuide').addEventListener('click', () => showSetupGuide(true));
   $('#acctPw').addEventListener('submit', async (e) => {
     e.preventDefault();
     const a = $('#aPw').value;
@@ -783,21 +961,16 @@ async function renderSettings(view) {
 
   // ---- credentials card (shown once) ----
   const showCreds = ({ email, name, role, password, token }) => {
-    const msg = [
-      `Coco Voice dashboard: ${location.origin}`,
-      `Email: ${email}`,
-      `Temporary password: ${password}`,
-      ...(token ? [`Extension token: ${token}`, 'Extension: click the Coco icon → Settings → paste token → Connect.'] : []),
-      'You will be asked to choose your own password at first sign-in.',
-    ].join('\n');
+    const msg = slackMessage({ name, email, role, password, token });
     $('#credOut').innerHTML = `
       <div class="card token-card">
         <h3>${esc(name || email)} · ${esc(ROLE_LABEL[role] || role)}</h3>
-        <p class="small">Shown only once. Send it to the person privately (not in a group chat).</p>
+        <p class="small">Shown only once. Send it to the person privately — a Slack <b>direct message</b>, not a channel.</p>
         <label>Email</label><div class="token-row"><div class="token">${esc(email)}</div></div>
         <label>Temporary password</label><div class="token-row"><div class="token">${esc(password)}</div><button class="btn" id="cpPw">Copy</button></div>
         ${token ? `<label>Extension token</label><div class="token-row"><div class="token">${esc(token)}</div><button class="btn" id="cpTok">Copy</button></div>` : ''}
-        <button class="btn dark" id="cpAll" style="margin-top:8px">Copy all as a message</button>
+        <label>Message preview (Slack formatting)</label><pre class="slack-preview">${esc(msg)}</pre>
+        <button class="btn" id="cpAll" style="margin-top:8px">Copy message for Slack</button>
       </div>`;
     copyBtn('cpPw', password);
     if (token) copyBtn('cpTok', token);
@@ -863,7 +1036,7 @@ async function renderSettings(view) {
       <div class="card token-card">
         <h3>Token for ${esc(name)}</h3>
         <p class="small">Copy it now — it is shown only once. Send it to the agent privately (not in a group chat).</p>
-        <div class="token-row"><div class="token">${esc(token)}</div><button class="btn" id="tokCopy">Copy</button></div>
+        <div class="token-row"><div class="token">${esc(token)}</div><button class="btn" id="tokCopy">Copy</button><button class="btn dark" id="tokSlack">Copy message for Slack</button></div>
         <ol class="small">
           <li>Agent installs the Coco Voice extension in Chrome.</li>
           <li>Clicks the extension → <b>Settings</b> → pastes the token → <b>Connect</b>. It shows "Connected as ${esc(name)}". Tracking starts now.</li>
@@ -871,6 +1044,7 @@ async function renderSettings(view) {
         </ol>
       </div>`;
     copyBtn('tokCopy', token);
+    copyBtn('tokSlack', slackMessage({ name, role: 'agent', token }));
     $('#tokenOut').scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
   $('#addAgent').addEventListener('click', async () => {

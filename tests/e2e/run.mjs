@@ -382,6 +382,36 @@ async function main() {
   const settingsOk = await waitFor(() => cdp.eval(dS, "!!document.getElementById('createUser') && !!document.getElementById('saveSettings') && document.body.textContent.includes('E2E Bot')"), 10000);
   check('dashboard UI: admin Settings shows Create user, business settings and the agent', settingsOk);
 
+  // ===== 7c. First sign-in guide, Extension page, update banners, Slack message =====
+  const guide = await cdp.eval(dS, "!!document.querySelector('dialog#setupGuide[open]')");
+  check('dashboard: first sign-in shows the setup guide', guide);
+  await cdp.eval(dS, "document.getElementById('guideDone')?.click(); true");
+  const onboarded = await waitFor(async () => {
+    const u = await (await fetch(`${URL_}/auth/v1/admin/users/${created.users[0]}`, { headers: { apikey: SR, Authorization: `Bearer ${SR}` } })).json();
+    return u.user_metadata?.onboarded === true;
+  }, 8000);
+  check('dashboard: "Got it" remembers the guide was seen (not shown again)', onboarded);
+  const live = await (await fetch('https://coco-voice-dashboard.vercel.app/extension.json', { cache: 'no-store' })).json();
+  await sql(`update agents set last_health = jsonb_build_object('extensionVersion', '0.1.0') where id='${agentId}'`);
+  await cdp.eval(dS, "location.hash = '#/extension'; true");
+  const extPage = await waitFor(() => cdp.eval(dS, `(() => { const a = document.querySelector('#view a[download]');
+    return a && document.body.textContent.includes('v${live.version}') && document.body.textContent.includes('v0.1.0 · update') && a.href; })()`), 10000);
+  check('dashboard Extension page: latest version, download link, agents with old versions flagged', !!extPage && /coco-voice-extension\.zip$/.test(extPage), String(extPage));
+  await cdp.eval(dS, "location.reload(); true");
+  const banner = await waitFor(() => cdp.eval(dS, "(() => { const b = document.getElementById('updateBanner'); return b && !b.hidden && b.textContent; })()"), 20000);
+  check('dashboard: admin sees a banner when an agent runs an old extension', /old Coco extension/.test(banner || '') && /E2E Bot/.test(banner || ''), String(banner));
+  const slack = await cdp.eval(dS, "window.__coco?.slackMessage({ name: 'Sam', email: 'sam@example.com', role: 'agent', password: 'Temp123abc', token: 'coco_x' })");
+  check('Slack message has login, temp password, token and extension download in Slack formatting',
+    !!slack && (/\*1\. Sign in/.test(slack) && /`Temp123abc`/.test(slack) && /`coco_x`/.test(slack) && /coco-voice-extension\.zip/.test(slack)), String(slack).slice(0, 200));
+
+  // extension: update check against the live dashboard + panel banner when a newer version exists
+  const ext1 = await waitFor(async () => (await store()).latestExtension, 70000);
+  check('extension checks the dashboard for its latest version', ext1?.version === live.version, JSON.stringify(ext1));
+  await cdp.eval(swS2 || swS, "chrome.storage.local.set({ latestExtension: { version: '99.0.0', notes: ['test'], updateAvailable: true, checkedAt: Date.now() } })");
+  const upBox = await waitFor(() => cdp.eval(panelS, "!document.getElementById('updateBox').hidden && document.getElementById('updateVer').textContent"), 8000);
+  check('side panel shows "Update available" for an older installed version', /99\.0\.0/.test(upBox || ''), String(upBox));
+  await cdp.eval(swS2 || swS, `chrome.storage.local.set({ latestExtension: ${JSON.stringify({ ...ext1 })} })`);
+
   // ===== 8. Revoked token =====
   await sql(`update agents set token_hash = 'revoked-${crypto.randomBytes(4).toString('hex')}' where id='${agentId}'`);
   await cdp.eval(swS2 || swS, "chrome.storage.local.set({ heartbeatPending: true, backoffUntil: 0 })");
