@@ -248,8 +248,11 @@ async function onCapture({ url, body, reqBody }) {
 
   await set({ events: local, queue, health });
   if (added) await refreshStatus();
+  // New calls/texts reach the dashboard within seconds (debounced; the 1-minute alarm is the fallback).
   if (queue.length >= 50) sync();
+  else if (added) { clearTimeout(syncSoon); syncSoon = setTimeout(sync, 3000); }
 }
+let syncSoon = null;
 
 // ---------- shared status: badge + summary for panel and widget ----------
 async function refreshStatus() {
