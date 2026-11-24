@@ -6,7 +6,7 @@
 // can't classify is still sent with direction/kind = 'unknown' plus the raw array, so it
 // can be re-parsed server-side later and is visible on the dashboard as "unclassified".
 
-export const PARSER_VERSION = '0.6.0-voicemail-verified';
+export const PARSER_VERSION = '0.7.0-missed-verified';
 
 export const FIELD_MAP = {
   // thread = [threadId, isRead, [messages...], ...]
@@ -16,10 +16,12 @@ export const FIELD_MAP = {
   // VERIFIED 2026-11-23 from live calls: call threads are "c.<id>", type 14 = outgoing call,
   // duration (seconds) @8, contact = participants[0] @3.
   // VERIFIED 2026-11-23 from a live voicemail: type 2, audio URL @11, transcript block @21 ([[segments], _, status]).
-  // NOT yet verified: incoming answered / missed call codes.
+  // VERIFIED 2026-11-24 from a live missed call (no voicemail left): type 0, duration 0.
+  // NOT yet verified: incoming answered call code (1 is the classic Google Voice value).
   message: { id: 0, timestamp: 1, participants: 3, type: 4, duration: 8, text: 9, media: 11, transcript: 21 },
-  // typeCode -> { kind, direction, outcome }   (2/10/11/14 verified; others still a best guess)
+  // typeCode -> { kind, direction, outcome }   (0/2/10/11/14 verified; others still a best guess)
   typeCodes: {
+    0:  { kind: 'call', direction: 'inbound', outcome: 'missed' },
     1:  { kind: 'call', direction: 'inbound', outcome: 'answered' },
     2:  { kind: 'voicemail', direction: 'inbound', outcome: 'voicemail' },
     4:  { kind: 'call', direction: 'inbound', outcome: 'missed' },

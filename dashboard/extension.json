@@ -1,12 +1,19 @@
 {
-  "version": "0.8.0",
-  "released": "2026-11-24T09:55:57.656Z",
+  "version": "0.8.1",
+  "released": "2026-11-24T10:29:31.326Z",
   "download": "/downloads/coco-voice-extension.zip",
-  "versioned": "/downloads/coco-voice-extension-0.8.0.zip",
-  "size": 46620,
-  "sha256": "97848dcc82c5abd0c56e10e4297b7ed6685881cca62cc7df01dd842fafa67c5f",
+  "versioned": "/downloads/coco-voice-extension-0.8.1.zip",
+  "size": 46648,
+  "sha256": "3bdd81f5aa479d34c9dc75458cba7dffc1d8dbe45c9b0be8451e4372e8e2e436",
   "min_chrome": "116",
   "history": [
+    {
+      "version": "0.8.1",
+      "released": "2026-11-24T10:29:31.326Z",
+      "notes": [
+        "Missed calls (no voicemail left) are now counted — Google's code for them is verified from a live call"
+      ]
+    },
     {
       "version": "0.8.0",
       "released": "2026-11-24T09:55:57.656Z",
