@@ -93,3 +93,22 @@ chrome.storage.onChanged.addListener(render);
 render();
 
 document.querySelectorAll('.cy').forEach((e) => { e.textContent = String(new Date().getFullYear()); });
+
+// Unpacked extension updated on disk but Chrome still runs the old code (the panel already reads the new files):
+// compare the manifest on disk with the running one and offer a one-click restart.
+(async () => {
+  try {
+    const running = chrome.runtime.getManifest().version;
+    const onDisk = (await (await fetch(chrome.runtime.getURL('manifest.json'), { cache: 'no-store' })).json()).version;
+    if (onDisk && onDisk !== running) {
+      $('finishVer').textContent = `v${running} → v${onDisk}`;
+      $('finishBox').hidden = false;
+      $('finishUpdate').addEventListener('click', async () => {
+        $('finishUpdate').disabled = true;
+        $('finishUpdate').textContent = 'Restarting…';
+        // after the restart the new version re-injects into open Voice tabs and asks for a Voice reload if needed
+        chrome.runtime.reload();
+      });
+    }
+  } catch { /* ignore */ }
+})();

@@ -1,12 +1,20 @@
 {
-  "version": "0.8.1",
-  "released": "2026-11-24T10:29:31.326Z",
+  "version": "0.8.2",
+  "released": "2026-11-24T10:54:02.635Z",
   "download": "/downloads/coco-voice-extension.zip",
-  "versioned": "/downloads/coco-voice-extension-0.8.1.zip",
-  "size": 46648,
-  "sha256": "3bdd81f5aa479d34c9dc75458cba7dffc1d8dbe45c9b0be8451e4372e8e2e436",
+  "versioned": "/downloads/coco-voice-extension-0.8.2.zip",
+  "size": 47075,
+  "sha256": "dfdfa87c5744666ee1cf7f2301b03c8c10c89a26ad0eeb68246abe3ed02a89ed",
   "min_chrome": "116",
   "history": [
+    {
+      "version": "0.8.2",
+      "released": "2026-11-24T10:54:02.635Z",
+      "notes": [
+        "One-click 'Finish update' in the side panel when Chrome is still running an older version",
+        "Includes 0.8.1: missed calls without voicemail are counted; 0.8.0: built-in call recording"
+      ]
+    },
     {
       "version": "0.8.1",
       "released": "2026-11-24T10:29:31.326Z",

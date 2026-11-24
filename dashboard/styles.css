@@ -221,3 +221,8 @@ mark { background: var(--accent); color: #000; border-radius: 2px; }
   .section-title .row { max-width: 100%; min-width: 0; flex-wrap: wrap; }
   #txModel { width: 100%; }
 }
+/* live updates indicator (filter bar) */
+.hero-band .live { margin-left: auto; color: #000; font-weight: 600; white-space: nowrap; }
+.hero-band .live + .tz { margin-left: 12px; }
+.hero-band .live.off { color: #8a1a1a; }
+@media (max-width: 760px) { .hero-band .live { margin-left: 0; } }

@@ -341,14 +341,40 @@ function saveRangePref() {
     $('#customRange').hidden = p.r !== 'custom';
   } catch { /* ignore */ }
 }());
-// rolling / today ranges refresh themselves every 2 minutes while the tab is visible (not while typing)
-setInterval(() => {
-  if (document.hidden || $('#app').hidden) return;
-  if (document.activeElement?.matches('input, select, textarea') || document.querySelector('dialog[open]')) return;
+// Live updates: every 10 s ask the server for a cheap change stamp; redraw quietly when something new arrived
+// (call, text, voicemail, recording, transcript, review, extension check-in). Rolling ranges also move every 2 min.
+// Never interrupts: skips while typing, a list/dialog is open, audio is playing or a transcription is running.
+let liveStamp = null;
+let liveBusy = false;
+let lastRender = 0;
+const LIVE_PAGES = ['overview', 'contacts', 'conversations', 'analysis', 'recordings'];
+async function liveTick() {
+  if (liveBusy || document.hidden || $('#app').hidden || !state.role) return;
   const page = location.hash.split('/')[1] || 'overview';
-  if (!['1h', '4h', 'today', 'shift'].includes(state.range)) return;
-  if (['overview', 'contacts', 'conversations', 'analysis'].includes(page) && !location.hash.split('/')[2]) route();
-}, 120e3);
+  if (!LIVE_PAGES.includes(page)) return;
+  if (document.activeElement?.matches('input, select, textarea') || document.querySelector('dialog[open]')) return;
+  if ([...document.querySelectorAll('audio')].some((a) => !a.paused) || document.querySelector('.tx-btn[disabled]') || $('#txAll')?.disabled) return;
+  liveBusy = true;
+  try {
+    const v = await rpc('activity_version', {});
+    const rolling = ['1h', '4h', 'shift', 'today'].includes(state.range) && Date.now() - lastRender > 120e3;
+    if ((liveStamp !== null && v !== liveStamp) || rolling) {
+      const y = window.scrollY;
+      await route({ quiet: true });
+      window.scrollTo(0, y);
+    }
+    liveStamp = v;
+    setLive(true);
+  } catch { setLive(false); } finally { liveBusy = false; }
+}
+function setLive(ok) {
+  const el = $('#live');
+  if (!el) return;
+  el.classList.toggle('off', !ok);
+  el.textContent = ok ? `● Live · ${new Date(lastRender || Date.now()).toLocaleTimeString('en-US', { timeZone: tz(), hour: 'numeric', minute: '2-digit', second: '2-digit' })}` : '● Reconnecting…';
+}
+setInterval(liveTick, 10e3);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) liveTick(); });
 $('#agentFilter').addEventListener('change', (e) => {
   state.agent = e.target.value;
   if (state.range === 'shift' && !shiftWindow(state.agent)) { // shift preset needs an agent with a shift
@@ -359,14 +385,16 @@ $('#agentFilter').addEventListener('change', (e) => {
 });
 window.addEventListener('hashchange', route);
 
-async function route() {
+async function route(opts = {}) {
   if (!state.role) return;
   computeRange();
+  lastRender = Date.now();
+  setLive(true);
   const [, page = 'overview', arg] = location.hash.split('/');
   document.querySelectorAll('#navLinks a').forEach((a) => a.classList.toggle('on', a.dataset.k === page));
   $('#filters').hidden = page === 'settings' || page === 'account' || page === 'extension';
   const view = $('#view');
-  view.innerHTML = '<div class="empty">Loading…</div>';
+  if (!opts.quiet) view.innerHTML = '<div class="empty">Loading…</div>';
   try {
     if (page === 'conversations' && isMgr()) await renderConversations(view, arg);
     else if (page === 'contacts' && isMgr()) await renderContacts(view);
