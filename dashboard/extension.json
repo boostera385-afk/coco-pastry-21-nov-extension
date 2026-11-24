@@ -1,12 +1,21 @@
 {
-  "version": "0.8.2",
-  "released": "2026-11-24T10:54:02.635Z",
+  "version": "0.9.0",
+  "released": "2026-11-24T11:40:25.319Z",
   "download": "/downloads/coco-voice-extension.zip",
-  "versioned": "/downloads/coco-voice-extension-0.8.2.zip",
-  "size": 47075,
-  "sha256": "dfdfa87c5744666ee1cf7f2301b03c8c10c89a26ad0eeb68246abe3ed02a89ed",
+  "versioned": "/downloads/coco-voice-extension-0.9.0.zip",
+  "size": 47813,
+  "sha256": "4aceca2e53b51a319f33c040f184cec248496444d805e330f0ba12b7ed05df3a",
   "min_chrome": "116",
   "history": [
+    {
+      "version": "0.9.0",
+      "released": "2026-11-24T11:40:25.319Z",
+      "notes": [
+        "Calls are transcribed automatically after they end (server, most accurate model) — nothing to install or download on this laptop",
+        "Each speaker is recorded separately so transcripts read Agent / Caller correctly",
+        "Short calls where you really talked to someone now count as conversations"
+      ]
+    },
     {
       "version": "0.8.2",
       "released": "2026-11-24T10:54:02.635Z",

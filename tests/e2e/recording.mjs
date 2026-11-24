@@ -124,7 +124,7 @@ async function browserPart(token, agentId, adminJwt) {
   await cdp.send('Fetch.enable', { patterns: [{ urlPattern: 'https://voice.google.com/*' }] }, pageS);
   await cdp.send('Page.navigate', { url: 'https://voice.google.com/u/0/calls' }, pageS);
   await waitFor(() => cdp.eval(pageS, "document.title === 'loaded'"), 15000);
-  check('recorder script is active on the Voice page', await waitFor(() => cdp.eval(pageS, 'window.__cocoRecorder === 1'), 5000));
+  check('recorder script is active on the Voice page', await waitFor(() => cdp.eval(pageS, 'window.__cocoRecorder >= 1'), 5000));
   await sleep(1500); // content script pushes rec-config
 
   // ---- call 1: recorded ----
@@ -143,6 +143,10 @@ async function browserPart(token, agentId, adminJwt) {
   const rowsBefore = await waitFor(async () => { const r = await sql(`select id, path, duration_sec, bytes from call_recordings where agent_id='${agentId}'`); return r.length ? r : null; }, 45000, 1000);
   check('recording uploaded by the extension (call_recordings row)', rowsBefore?.length === 1, JSON.stringify(rowsBefore));
   const rec = rowsBefore?.[0];
+  const parts = await waitFor(async () => { const [r] = await sql(`select agent_path, caller_path from call_recordings where agent_id='${agentId}'`); return r?.agent_path && r?.caller_path && r; }, 30000, 1000);
+  check('per-speaker files uploaded too (agent + caller, for labelled transcripts)', /-agent\.webm$/.test(parts?.agent_path || '') && /-caller\.webm$/.test(parts?.caller_path || ''), JSON.stringify(parts));
+  const job = await waitFor(async () => { const [j] = await sql(`select status from transcription_jobs j join call_recordings r on r.id = j.ref_id where r.agent_id='${agentId}'`); return j && j.status !== 'pending' && j; }, 30000, 1000);
+  check('transcription starts automatically after the call (job picked up by the server)', ['done', 'no_provider', 'working', 'failed'].includes(job?.status), JSON.stringify(job));
   check('recording length ≈ call length (5–9 s)', rec && rec.duration_sec >= 5 && rec.duration_sec <= 9, `dur ${rec?.duration_sec}`);
   const ev = { type: 'call', gv_id: gv, gv_thread_id: `c.${gv}`, agent_number: '+15550001111', contact_number: '+15550107777', direction: 'outbound',
     occurred_at: new Date(callStart - 8000).toISOString(), body: null, call_outcome: 'connected', duration_sec: 7, type_code: 1 };

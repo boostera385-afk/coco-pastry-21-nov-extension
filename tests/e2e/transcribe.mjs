@@ -43,10 +43,13 @@ try {
   userId = u.id;
   await fetch(`https://api.supabase.com/v1/projects/${env.SUPABASE_PROJECT_REF}/database/query`, { method: 'POST', headers: { Authorization: `Bearer ${env.SUPABASE_ACCESS_TOKEN}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ query: `insert into profiles (user_id, role) values ('${userId}', 'admin')` }) });
   const jwt = (await (await fetch(`${URL_}/auth/v1/token?grant_type=password`, { method: 'POST', headers: { apikey: ANON, 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password: pw }) })).json()).access_token;
-  const q = await (await fetch(`${URL_}/rest/v1/rpc/transcription_queue`, { method: 'POST', headers: { apikey: ANON, Authorization: `Bearer ${jwt}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ p_limit: 1 }) })).json();
-  if (!q.length) { console.log('SKIP  nothing waiting for a transcript'); ok = true; throw new Error('skip'); }
-  const signed = await (await fetch(`${URL_}/storage/v1/object/sign/recordings/${q[0].recording_path}`, { method: 'POST', headers: { apikey: ANON, Authorization: `Bearer ${jwt}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresIn: 600 }) })).json();
-  const audioUrl = `${URL_}/storage/v1${signed.signedURL}`;
+  // newest Coco call recording (else newest voicemail with audio)
+  const sqlq = async (query) => (await (await fetch(`https://api.supabase.com/v1/projects/${env.SUPABASE_PROJECT_REF}/database/query`, { method: 'POST', headers: { Authorization: `Bearer ${env.SUPABASE_ACCESS_TOKEN}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ query }) })).json());
+  const q = await sqlq(`select * from (select 'recording' kind, path, agent_path, caller_path, started_at at_ from call_recordings where agent_id in (select id from agents where name not like 'E2E%') order by started_at desc limit 1) a
+    union all select * from (select 'voicemail', recording_path, null, null, occurred_at from messages where kind = 'voicemail' and recording_path is not null order by occurred_at desc limit 1) b`);
+  if (!q.length) { console.log('SKIP  no recordings'); ok = true; throw new Error('skip'); }
+  const sign = async (p) => (p ? `${URL_}/storage/v1${(await (await fetch(`${URL_}/storage/v1/object/sign/recordings/${p}`, { method: 'POST', headers: { apikey: ANON, Authorization: `Bearer ${jwt}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresIn: 600 }) })).json()).signedURL}` : null);
+  const src = { mixUrl: await sign(q[0].path), agentUrl: await sign(q[0].agent_path), callerUrl: await sign(q[0].caller_path), voicemail: q[0].kind === 'voicemail' };
 
   userDir = fs.mkdtempSync(path.join(os.tmpdir(), 'coco-tx-'));
   chrome = spawn(findChromium(), ['--headless=new', `--remote-debugging-port=${PORT}`, `--user-data-dir=${userDir}`, '--no-first-run', 'about:blank'], { stdio: 'ignore' });
@@ -56,9 +59,10 @@ try {
   const s = await cdp.attach(targetId);
   await sleep(1500);
   const t0 = Date.now();
-  const out = await cdp.eval(s, `import('/transcriber.js').then((t) => t.transcribeUrl(${JSON.stringify(audioUrl)})).then((text) => ({ text })).catch((e) => ({ error: String(e) }))`);
-  console.log(`${q[0].kind} from ${q[0].occurred_at} (${q[0].recording_path.split('.').pop()}), ${Math.round((Date.now() - t0) / 1000)} s:`);
-  console.log(out.error ? `FAIL  ${out.error}` : `PASS  transcript: "${out.text}"`);
+  const out = await cdp.eval(s, `import('/transcriber.js').then((t) => t.transcribeSources(${JSON.stringify(src)})).then((o) => ({ text: o.text, model: o.model, answeredBy: o.answeredBy })).catch((e) => ({ error: String(e) }))`);
+  console.log(`${q[0].kind} from ${q[0].at_}${q[0].agent_path ? ' (per-speaker files)' : ' (mixed file)'}, ${Math.round((Date.now() - t0) / 1000)} s, answered by: ${out.answeredBy}`);
+  console.log(out.error ? `FAIL  ${out.error}` : `PASS  ${out.model}:
+${out.text}`);
   ok = !out.error && typeof out.text === 'string';
   cdp.close();
 } catch (e) { if (e.message !== 'skip') console.log('FAIL ', e.message); } finally {

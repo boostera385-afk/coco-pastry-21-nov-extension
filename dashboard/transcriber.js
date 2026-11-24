@@ -1,19 +1,28 @@
-// Transcription on the admin's computer (Whisper in a Web Worker). Free and private: audio is decoded and
-// transcribed locally; only the finished text is saved to the database.
-// Coco's own call recordings are dual-channel (agent LEFT, caller RIGHT) → each side is transcribed
-// separately and merged by time into "Agent: … / Caller: …" lines. Mono audio (Google voicemails) → plain text.
+// Browser fallback transcription (Whisper in a Web Worker). Used when the server (Groq) can't do a job.
+// Robustness / accuracy:
+// - best model the computer can run: Whisper large-v3-turbo on WebGPU, small.en on WebAssembly;
+// - voice activity detection: only real speech is sent to Whisper (no invented words in silences), each
+//   utterance keeps its true start time so Agent / Caller lines come out in the right order;
+// - each speaker transcribed separately (per-speaker files, or the two channels of the stereo file);
+// - shared clean-up + "who answered" detection (transcript-core.js, same rules as the server).
+import { cleanSegments, mergeTurns, formatTurns, detectAnsweredBy } from './transcript-core.js';
 
 export const MODELS = {
-  'onnx-community/whisper-base.en': 'Fast (English, ~80 MB download once)',
-  'onnx-community/whisper-small.en': 'Accurate (English, ~250 MB download once, slower)',
-  'onnx-community/whisper-base': 'Fast, any language (~80 MB)',
+  auto: 'Best for this computer (automatic)',
+  'onnx-community/whisper-large-v3-turbo': 'Most accurate — large-v3-turbo (~800 MB once, needs WebGPU)',
+  'onnx-community/whisper-small.en': 'Balanced — small.en (~250 MB once)',
+  'onnx-community/whisper-base.en': 'Fast — base.en (~80 MB once, least accurate)',
 };
-export const DEFAULT_MODEL = 'onnx-community/whisper-base.en';
+let gpuOk = null;
+export async function bestModel(choice = 'auto') {
+  if (choice && choice !== 'auto') return choice;
+  if (gpuOk === null) gpuOk = !!('gpu' in navigator && (await navigator.gpu.requestAdapter().catch(() => null)));
+  return gpuOk ? 'onnx-community/whisper-large-v3-turbo' : 'onnx-community/whisper-small.en';
+}
 
 let worker = null;
 let seq = 0;
 const waiting = new Map();
-
 function getWorker() {
   if (worker) return worker;
   worker = new Worker(new URL('./whisper-worker.js', import.meta.url), { type: 'module' });
@@ -21,71 +30,111 @@ function getWorker() {
     const w = waiting.get(data.id);
     if (!w) return;
     if (data.type === 'progress') w.onProgress?.(data);
-    else { waiting.delete(data.id); data.type === 'done' ? w.resolve(data.results) : w.reject(new Error(data.error)); }
+    else { waiting.delete(data.id); data.type === 'done' ? w.resolve(data.texts) : w.reject(new Error(data.error)); }
   };
   worker.onerror = (e) => { waiting.forEach((w) => w.reject(new Error(e.message || 'transcriber failed to start'))); waiting.clear(); worker = null; };
   return worker;
 }
 
 /** Decode any browser-playable audio to 16 kHz Float32 channels (Whisper's input format). */
-async function decode(arrayBuffer) {
+export async function decode(arrayBuffer) {
   const ctx = new OfflineAudioContext(1, 1, 16000);
   const buf = await ctx.decodeAudioData(arrayBuffer);
-  // decodeAudioData keeps the source rate in some browsers: resample to 16 kHz, per channel
   const out = [];
   for (let c = 0; c < buf.numberOfChannels; c++) {
-    if (buf.sampleRate === 16000) { out.push(buf.getChannelData(c)); continue; }
-    const len = Math.ceil(buf.duration * 16000);
-    const off = new OfflineAudioContext(1, len, 16000);
-    const src = off.createBufferSource();
+    if (buf.sampleRate === 16000) { out.push(new Float32Array(buf.getChannelData(c))); continue; }
+    const off = new OfflineAudioContext(1, Math.ceil(buf.duration * 16000), 16000);
     const mono = off.createBuffer(1, buf.length, buf.sampleRate);
     mono.copyToChannel(buf.getChannelData(c), 0);
-    src.buffer = mono; src.connect(off.destination); src.start();
+    const src = off.createBufferSource(); src.buffer = mono; src.connect(off.destination); src.start();
     out.push((await off.startRendering()).getChannelData(0));
   }
-  return { channels: out, duration: buf.duration };
-}
-
-const rms = (a) => { let s = 0; const step = Math.max(1, Math.floor(a.length / 200000)); let k = 0; for (let i = 0; i < a.length; i += step) { s += a[i] * a[i]; k++; } return Math.sqrt(s / Math.max(1, k)); };
-const clock = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
-
-/** Merge per-speaker timestamped chunks into readable dialogue. */
-export function mergeDialogue(results, labels) {
-  const lines = [];
-  results.forEach((r, i) => (r?.chunks || []).forEach((c) => {
-    const text = String(c.text || '').trim();
-    if (text && !/^\[?(blank_audio|music|silence)\]?$/i.test(text)) lines.push({ at: c.timestamp?.[0] ?? 0, who: labels[i], text });
-  }));
-  lines.sort((a, b) => a.at - b.at);
-  const merged = [];
-  for (const l of lines) {
-    const last = merged[merged.length - 1];
-    if (last && last.who === l.who) last.text += ` ${l.text}`; else merged.push({ ...l });
-  }
-  return merged.map((l) => `[${clock(l.at)}] ${l.who}: ${l.text}`).join('\n');
+  return out;
 }
 
 /**
- * Transcribe one audio URL. onProgress({ stage, pct, text }) for the UI.
- * Returns the transcript text ('' when nothing was said).
+ * Energy-based voice activity detection. Returns speech regions [{ start, end }] in seconds.
+ * The threshold adapts to each recording's noise floor, so quiet phone lines and loud ones both work.
  */
-export async function transcribeUrl(url, { model = DEFAULT_MODEL, onProgress } = {}) {
-  onProgress?.({ stage: 'download', text: 'Downloading audio…' });
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`audio download failed (${res.status})`);
-  onProgress?.({ stage: 'decode', text: 'Decoding audio…' });
-  const { channels } = await decode(await res.arrayBuffer());
-  const stereo = channels.length === 2;
-  // skip a silent side (e.g. muted mic) so Whisper doesn't invent words
-  const input = channels.map((c) => (rms(c) > 0.002 ? c : null));
-  if (!input.some(Boolean)) return '';
+export function speechRegions(x, rate = 16000) {
+  const frame = Math.round(rate * 0.03);
+  const n = Math.floor(x.length / frame);
+  if (!n) return [];
+  const db = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let s = 0;
+    for (let j = i * frame; j < (i + 1) * frame; j++) s += x[j] * x[j];
+    db[i] = 10 * Math.log10(s / frame + 1e-10);
+  }
+  const sorted = [...db].sort((a, b) => a - b);
+  const floor = sorted[Math.floor(n * 0.1)];
+  const peak = sorted[Math.floor(n * 0.98)];
+  if (peak < -55 || peak - floor < 8) return []; // silent channel
+  const thr = Math.max(floor + 0.35 * (peak - floor), -50);
+  const regions = [];
+  let start = -1; let quiet = 0;
+  for (let i = 0; i < n; i++) {
+    if (db[i] > thr) { if (start < 0) start = i; quiet = 0; } else if (start >= 0 && ++quiet > 20) { regions.push([start, i - quiet]); start = -1; quiet = 0; } // 0.6 s pause ends an utterance
+  }
+  if (start >= 0) regions.push([start, n - 1]);
+  const t = frame / rate;
+  return regions
+    .map(([a, b]) => ({ start: Math.max(0, a * t - 0.25), end: Math.min(x.length / rate, (b + 1) * t + 0.3) }))
+    .filter((r) => r.end - r.start >= 0.35);
+}
+
+/** Cut regions into clips of at most 28 s (Whisper's window). */
+function clipsOf(x, regions, rate = 16000) {
+  const clips = []; const meta = [];
+  for (const r of regions) {
+    for (let s = r.start; s < r.end; s += 28) {
+      const e = Math.min(r.end, s + 28);
+      clips.push(x.slice(Math.floor(s * rate), Math.ceil(e * rate)));
+      meta.push({ start: s, end: e });
+    }
+  }
+  return { clips, meta };
+}
+
+async function runClips(clips, model, onProgress) {
+  if (!clips.length) return [];
   const id = ++seq;
   const w = getWorker();
-  const results = await new Promise((resolve, reject) => {
-    waiting.set(id, { resolve, reject, onProgress: (p) => onProgress?.({ stage: 'model', pct: p.progress, text: p.status === 'progress' ? `Loading speech model… ${Math.round(p.progress || 0)}%` : 'Transcribing…' }) });
-    onProgress?.({ stage: 'model', text: 'Transcribing… (the first run downloads the speech model)' });
-    w.postMessage({ id, model, channels: input.map((c) => (c ? new Float32Array(c) : null)) }); // copies: AudioBuffer memory can't be transferred
+  return new Promise((resolve, reject) => {
+    waiting.set(id, { resolve, reject, onProgress: (p) => onProgress?.(p.status === 'clip' ? `Transcribing… ${p.progress}%` : p.status === 'progress' ? `Loading speech model… ${Math.round(p.progress || 0)}%` : 'Starting…') });
+    w.postMessage({ id, model, clips });
   });
-  if (!stereo) return (results[0]?.text || '').trim();
-  return mergeDialogue(results, ['Agent', 'Caller']);
+}
+
+async function fetchAudio(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`audio download failed (${res.status})`);
+  return res.arrayBuffer();
+}
+
+/**
+ * Transcribe one job. sources: { agentUrl?, callerUrl?, mixUrl } (signed links), labelled when two speakers are known.
+ * Returns { text, answeredBy, model }.
+ */
+export async function transcribeSources({ agentUrl, callerUrl, mixUrl, voicemail = false }, { model: choice = 'auto', onProgress } = {}) {
+  const model = await bestModel(choice);
+  onProgress?.('Downloading audio…');
+  let speakers; // [{ label, samples }]
+  if (agentUrl && callerUrl) {
+    const [a, c] = await Promise.all([fetchAudio(agentUrl).then(decode), fetchAudio(callerUrl).then(decode)]);
+    speakers = [{ label: 'Agent', x: a[0] }, { label: 'Caller', x: c[0] }];
+  } else {
+    const ch = await decode(await fetchAudio(mixUrl));
+    speakers = ch.length === 2 ? [{ label: 'Agent', x: ch[0] }, { label: 'Caller', x: ch[1] }] : [{ label: '', x: ch[0] }];
+  }
+  const lists = [];
+  for (const sp of speakers) {
+    const { clips, meta } = clipsOf(sp.x, speechRegions(sp.x));
+    const texts = await runClips(clips, model, onProgress);
+    lists.push(cleanSegments(texts.map((text, i) => ({ ...meta[i], text }))));
+  }
+  const labelled = speakers.length === 2;
+  const turns = mergeTurns(lists, speakers.map((s) => s.label));
+  if (voicemail) return { text: turns.map((t) => t.text).join(' '), answeredBy: null, model };
+  return { text: formatTurns(turns), answeredBy: detectAnsweredBy(turns, { labelled }), model };
 }

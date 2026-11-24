@@ -226,3 +226,4 @@ mark { background: var(--accent); color: #000; border-radius: 2px; }
 .hero-band .live + .tz { margin-left: 12px; }
 .hero-band .live.off { color: #8a1a1a; }
 @media (max-width: 760px) { .hero-band .live { margin-left: 0; } }
+#navLinks a[data-busy="1"]::after { content: " ●"; color: var(--yellow); }

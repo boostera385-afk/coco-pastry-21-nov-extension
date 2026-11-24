@@ -38,12 +38,23 @@ Deno.serve(async (req) => {
   const params = new URL(req.url).searchParams;
   const audioExt = (type: string) => (type.includes('mpeg') || type.includes('mp3') ? 'mp3' : type.includes('mp4') || type.includes('aac') ? 'm4a'
     : type.includes('ogg') ? 'ogg' : type.includes('wav') ? 'wav' : type.includes('webm') ? 'webm' : type.includes('amr') ? 'amr' : 'bin');
+  // Automatic transcription runs in the background (the extension gets its answer right away).
+  const kickTranscription = () => {
+    const run = fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/transcribe`, {
+      method: 'POST', headers: { Authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ max: 3 }),
+    }).then((r) => r.body?.cancel()).catch(() => {});
+    // deno-lint-ignore no-explicit-any
+    const rt = (globalThis as any).EdgeRuntime;
+    if (rt?.waitUntil) rt.waitUntil(run);
+  };
   const saveRecordings = async () => {
     const { data: cfg } = await supabase.from('app_settings').select('save_recordings').eq('id', 1).maybeSingle();
     return !(cfg && cfg.save_recordings === false);
   };
 
-  // ---- call recording made by the extension itself: POST ?rec=<uuid>&start=<iso>&dur=<sec> ----
+  // ---- call recording made by the extension itself: POST ?rec=<uuid>&start=<iso>&dur=<sec>[&part=agent|caller] ----
+  // The mixed stereo file (for playback) is sent first, then one mono file per speaker (for labelled transcripts).
   const rec = params.get('rec');
   if (rec !== null) {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(rec)) return json({ error: 'bad recording id' }, 400);
@@ -55,9 +66,18 @@ Deno.serve(async (req) => {
     if (!/^audio\//.test(type)) return json({ error: 'audio only' }, 415);
     const bytes = new Uint8Array(await req.arrayBuffer());
     if (!bytes.length || bytes.length > 25 * 1024 * 1024) return json({ error: 'empty or too large (25 MB max)' }, 413);
-    const path = `${agent.id}/rec-${rec}.${audioExt(type)}`;
+    const part = params.get('part');
+    if (part !== null && part !== 'agent' && part !== 'caller') return json({ error: 'bad part' }, 400);
+    const path = `${agent.id}/rec-${rec}${part ? `-${part}` : ''}.${audioExt(type)}`;
     const up = await supabase.storage.from('recordings').upload(path, bytes, { contentType: type, upsert: true });
     if (up.error) return json({ error: `storage: ${up.error.message}` }, 500);
+    if (part) {
+      const upd = await supabase.from('call_recordings').update({ [`${part}_path`]: path }).eq('id', rec).eq('agent_id', agent.id).select('agent_path, caller_path');
+      if (upd.error) return json({ error: upd.error.message }, 500);
+      if (!upd.data?.length) return json({ error: 'upload the mixed recording first' }, 409);
+      if (upd.data[0].agent_path && upd.data[0].caller_path) kickTranscription(); // both sides in: transcribe now
+      return json({ ok: true, path });
+    }
     const ins = await supabase.from('call_recordings').upsert({ id: rec, agent_id: agent.id, started_at: new Date(start).toISOString(),
       duration_sec: dur, bytes: bytes.length, path }, { onConflict: 'id' });
     if (ins.error) return json({ error: ins.error.message }, 500);
@@ -81,6 +101,7 @@ Deno.serve(async (req) => {
     if (up.error) return json({ error: `storage: ${up.error.message}` }, 500);
     const { data: rows, error: attErr } = await supabase.rpc('attach_recording', { p_agent: agent.id, p_gv_id: media, p_path: path });
     if (attErr) return json({ error: attErr.message }, 500);
+    kickTranscription(); // voicemail / Google call recording without Google's own transcript
     return json({ ok: true, path, attached: rows });
   }
 
@@ -102,6 +123,10 @@ Deno.serve(async (req) => {
   if (error) return json({ error: error.message }, 500);
   // recordings uploaded before their call was synced get linked now (cheap: only unmatched rows)
   if (events.length) await supabase.rpc('match_call_recordings', { p_agent: agent.id });
+  // catch-up: anything still waiting (older recordings, retries after a Groq hiccup) gets another go
+  const { count: waiting } = await supabase.from('transcription_jobs').select('id', { count: 'exact', head: true })
+    .in('status', ['pending', 'failed', 'working']).lt('tries', 4);
+  if (waiting) kickTranscription();
   const recordCalls = agent.record_calls !== false && (await saveRecordings());
   return json({ ...data, config: { ...(data?.config ?? {}), record_calls: recordCalls }, agent: { name: agent.name } });
 });

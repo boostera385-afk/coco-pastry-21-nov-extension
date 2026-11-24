@@ -444,8 +444,12 @@ async function onRecordingFile(msg) {
   const st = await get(['agentToken', 'paused', 'recordCalls']);
   if (!st.agentToken || st.paused || st.recordCalls === false) return;
   if (!/^[0-9a-f-]{36}$/.test(msg.id || '') || typeof msg.b64 !== 'string') return;
+  const type = String(msg.mime || 'audio/webm').split(';')[0];
   await putRecording({ id: msg.id, startedAt: msg.startedAt, durationSec: msg.durationSec | 0, mime: String(msg.mime || 'audio/webm'),
-    blob: b64ToBlob(msg.b64, String(msg.mime || 'audio/webm').split(';')[0]), tries: 0, savedAt: Date.now() });
+    blob: b64ToBlob(msg.b64, type),
+    // one mono file per speaker: the server transcribes each side separately ("Agent: … / Caller: …")
+    parts: { agent: msg.agentB64 ? b64ToBlob(msg.agentB64, type) : null, caller: msg.callerB64 ? b64ToBlob(msg.callerB64, type) : null },
+    sent: {}, tries: 0, savedAt: Date.now() });
   await set({ heartbeatPending: true });
   // the call event usually arrives a few seconds later; upload after the next sync so it can be matched right away
   clearTimeout(syncSoon); syncSoon = setTimeout(sync, 5000);
@@ -461,15 +465,23 @@ async function uploadRecordings() {
     const pending = (await listRecordings()).sort((a, b) => a.savedAt - b.savedAt).slice(0, 3);
     for (const r of pending) {
       let ok = false; let err = null;
+      const sent = { ...(r.sent || {}) };
       try {
-        const q = new URLSearchParams({ rec: r.id, start: r.startedAt, dur: String(r.durationSec) });
-        const res = await fetch(`${INGEST_URL}?${q}`, {
-          method: 'POST', headers: { 'x-agent-token': agentToken, 'Content-Type': r.blob.type || 'audio/webm' }, body: r.blob,
-          signal: AbortSignal.timeout(180000),
-        });
-        const out = await res.json().catch(() => ({}));
-        if (res.status === 401 || res.status === 403) return; // token problem: keep the file, sync() reports it
-        if (!res.ok) throw new Error(out.error || `upload ${res.status}`);
+        // mixed file first (creates the recording), then each speaker's file; finished pieces are never re-sent
+        for (const part of ['mix', 'agent', 'caller']) {
+          const blob = part === 'mix' ? r.blob : r.parts?.[part];
+          if (!blob || sent[part]) continue;
+          const q = new URLSearchParams({ rec: r.id, start: r.startedAt, dur: String(r.durationSec), ...(part === 'mix' ? {} : { part }) });
+          const res = await fetch(`${INGEST_URL}?${q}`, {
+            method: 'POST', headers: { 'x-agent-token': agentToken, 'Content-Type': blob.type || 'audio/webm' }, body: blob,
+            signal: AbortSignal.timeout(180000),
+          });
+          const out = await res.json().catch(() => ({}));
+          if (res.status === 401 || res.status === 403) return; // token problem: keep the file, sync() reports it
+          if (!res.ok) throw new Error(out.error || `upload ${res.status}`);
+          sent[part] = true;
+          if (out.skipped) break; // the admin turned recording off: nothing more to send
+        }
         ok = true; // stored, or skipped because the admin turned recording off
       } catch (e) { err = String(e.message || e).slice(0, 80); }
       const { recStats = { uploaded: 0, failed: 0 } } = await get('recStats');
@@ -478,7 +490,7 @@ async function uploadRecordings() {
         recStats.failed++; recStats.lastError = err;
         // give up after ~2 days of retries (sync runs every minute, uploads back off with tries)
         if (r.tries >= 40 || Date.now() - r.savedAt > 7 * 864e5) await deleteRecording(r.id);
-        else await putRecording({ ...r, tries: r.tries + 1 });
+        else await putRecording({ ...r, sent, tries: r.tries + 1 });
       }
       await set({ recStats });
       if (!ok) break; // offline / server down: try again on the next sync

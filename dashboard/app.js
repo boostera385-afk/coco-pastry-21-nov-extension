@@ -1001,7 +1001,7 @@ async function renderDetail(key, head) {
   const paths = items.map((i) => i.recording_path).filter(Boolean);
   const signed = paths.length ? ((await sb.storage.from('recordings').createSignedUrls(paths, 3600)).data || []) : [];
   const audioUrl = Object.fromEntries(signed.filter((x) => x.signedUrl).map((x) => [x.path, x.signedUrl]));
-  const player = (it) => (audioUrl[it.recording_path] ? `<audio class="rec" controls preload="none" src="${esc(audioUrl[it.recording_path])}"></audio>` : '');
+  const player = (it) => (audioUrl[it.recording_path] ? `<audio class="rec" controls preload="metadata" src="${esc(audioUrl[it.recording_path])}"></audio>` : '');
   const calls = items.filter((i) => i.kind === 'call');
   const out = calls.filter((c) => c.direction === 'outbound');
   const stat = (label, v) => `<div class="stat"><div class="value">${v}</div><div class="small muted">${label}</div></div>`;
@@ -1015,13 +1015,13 @@ async function renderDetail(key, head) {
       const o = it.direction === 'outbound';
       const cls = it.outcome === 'no_answer' || it.outcome === 'missed' ? 'bad' : it.conversation ? 'good' : '';
       return `${sep}<div class="callrow ${cls}"><span class="ci">${o ? ICON.callOut : ICON.callIn}</span>
-        <div><b>${o ? 'Outgoing' : 'Incoming'} call</b> · ${esc(OUTCOME[it.outcome] || it.outcome || 'unknown')}${it.conversation ? ' · <span class="badge good">conversation</span>' : ''}
+        <div><b>${o ? 'Outgoing' : 'Incoming'} call</b> · ${esc(OUTCOME[it.outcome] || it.outcome || 'unknown')}${it.conversation ? ' · <span class="badge good">conversation</span>' : ''}${it.answered_by === 'voicemail' || (it.answered_by === 'human' && !it.conversation) ? answeredBadge(it) : ''}
         <div class="small muted">${time} · ${it.duration_sec ? dur(it.duration_sec) : '0s'}</div>
         ${player(it)}${transcriptHtml(it)}</div></div>`;
     }
     return `${sep}<div class="bubble ${it.direction === 'outbound' ? 'out' : ''}">
       ${it.kind === 'voicemail' ? '<b>Voicemail</b> ' : ''}${esc(it.body || (it.kind === 'voicemail' ? '(no transcript)' : '(no text)'))}
-      ${player(it)}${it.kind === 'voicemail' && !it.body && it.recording_path ? transcriptHtml(it) : ''}<div class="meta">${it.direction === 'outbound' ? 'Sent' : 'Received'} · ${time}${it.kind === 'voicemail' && !it.recording_path ? ' · audio not saved yet' : ''}${it.transcript_source === 'whisper' ? ' · transcribed by Coco' : ''}</div></div>`;
+      ${player(it)}${it.kind === 'voicemail' && !it.body && it.recording_path ? transcriptHtml(it) : ''}<div class="meta">${it.direction === 'outbound' ? 'Sent' : 'Received'} · ${time}${it.kind === 'voicemail' && !it.recording_path ? ' · audio not saved yet' : ''}${it.transcript_source ? ` · transcript: ${esc(TX_SOURCE[it.transcript_source] || it.transcript_source)}` : ''}</div>${it.kind === 'voicemail' && it.body && it.transcript_source ? transcriptHtml(it) : ''}</div>`;
   }).join('');
   const texts = (dir) => n(items.filter((i) => i.kind === 'text' && i.direction === dir).length);
   $('#detail').innerHTML = `
@@ -1034,87 +1034,150 @@ async function renderDetail(key, head) {
       ${stat('calls in', n(calls.length - out.length + items.filter((i) => i.kind === 'voicemail').length))}${stat('missed', n(calls.filter((c) => c.direction === 'inbound' && c.outcome === 'missed').length))}${stat('voicemails', n(items.filter((i) => i.kind === 'voicemail').length))}
     </div>
     <div class="timeline">${rows || '<div class="empty">Empty</div>'}</div>`;
-  $('#detail').querySelectorAll('[data-tx]').forEach((btn) => btn.addEventListener('click', async () => {
-    const it = items.find((x) => x.id === btn.dataset.tx);
-    const ok = await transcribeItem({ kind: it.kind, id: it.id, recording_path: it.recording_path }, btn, audioUrl[it.recording_path]);
-    if (ok) renderDetail(key, head);
+  $('#detail').querySelectorAll('[data-redo]').forEach((btn) => btn.addEventListener('click', async () => {
+    const [kind, id] = btn.dataset.redo.split(':');
+    if (await requestTranscript(kind, id, btn)) setTimeout(() => renderDetail(key, head), 1500);
   }));
+  // WebM recordings from the browser don't store their length: find it so the player shows 0:00 / 1:23
+  $('#detail').querySelectorAll('audio.rec').forEach((a) => a.addEventListener('loadedmetadata', () => {
+    if (a.duration !== Infinity) return;
+    const back = () => { a.removeEventListener('timeupdate', back); a.currentTime = 0; };
+    a.addEventListener('timeupdate', back); a.currentTime = 1e7;
+  }, { once: true }));
 }
 
-/** Call transcript (dual-channel recordings read "Agent: … / Caller: …") or a Transcribe button. */
+/** Who answered + transcript (or its status) under a call / voicemail. */
+const TX_SOURCE = { groq: 'Whisper large-v3 (server)', 'whisper-browser': 'Whisper (browser)', whisper: 'Whisper base (old, browser)', google: 'Google' };
 function transcriptHtml(it) {
-  if (it.kind === 'call' && it.body) return `<details class="tx" open><summary class="small">Transcript${it.transcript_source === 'whisper' ? ' · by Coco' : ''}</summary><div class="tx-body">${esc(it.body)}</div></details>`;
-  if (it.recording_path && !it.body) return `<div class="tx-row"><button class="btn dark tx-btn" data-tx="${it.id}">Transcribe</button><span class="small muted tx-msg"></span></div>`;
+  const redo = `<button class="btn dark tx-btn" data-redo="${it.kind}:${it.id}" title="Transcribe again with the best model">${it.body ? 'Re-transcribe' : 'Transcribe now'}</button><span class="small muted tx-msg"></span>`;
+  if (it.kind === 'call' && it.body) {
+    return `<details class="tx" open><summary class="small">Transcript · ${esc(TX_SOURCE[it.transcript_source] || it.transcript_source || 'Coco')}</summary><div class="tx-body">${esc(it.body)}</div><div class="tx-row">${redo}</div></details>`;
+  }
+  if (it.recording_path && !it.body) return `<div class="tx-row"><span class="small muted">Transcript on its way (automatic)…</span> ${redo}</div>`;
+  if (it.kind === 'voicemail' && it.body && it.transcript_source) return `<div class="tx-row">${redo}</div>`;
   return '';
 }
+const answeredBadge = (it) => (it.answered_by === 'human' ? ' · <span class="badge good" title="The transcript shows a real person talking with the agent">talked to a person</span>'
+  : it.answered_by === 'voicemail' ? ' · <span class="badge" title="The transcript shows a voicemail greeting">reached voicemail</span>' : '');
 
-const TX_DEFAULT = 'onnx-community/whisper-base.en';
-const txModel = () => { try { return localStorage.getItem('coco.txModel') || TX_DEFAULT; } catch { return TX_DEFAULT; } };
-
-/** Transcribe one recording on this computer and save the text. Returns true when saved. */
-async function transcribeItem(item, btn, signedUrl) {
+/** Ask for a fresh transcript with the best model: server (Groq) right away, or the browser backup worker. */
+async function requestTranscript(kind, id, btn) {
   const msgEl = btn?.parentElement?.querySelector('.tx-msg');
   const say = (t) => { if (msgEl) msgEl.textContent = ` ${t}`; };
   if (btn) btn.disabled = true;
   try {
-    const url = signedUrl || (await sb.storage.from('recordings').createSignedUrl(item.recording_path, 600)).data?.signedUrl;
-    if (!url) throw new Error('could not open the audio file');
-    const tr = await import('./transcriber.js');
-    const text = await tr.transcribeUrl(url, { model: txModel(), onProgress: (p) => say(p.text) });
-    await rpc('save_transcript', { p_kind: item.kind === 'voicemail' ? 'voicemail' : 'call', p_id: item.id, p_text: text || '(no speech detected)', p_source: 'whisper' });
-    say('Saved ✓');
+    await rpc('retranscribe', { p_kind: kind, p_id: id });
+    say('Queued…');
+    const r = await kickServerTranscription();
+    if (r?.done) say('Done ✓');
+    else if (r?.handed_to_browser) { say('Transcribing in this browser…'); await browserTranscribeTick(true); say('Done ✓'); } else say('Queued — appears automatically');
     return true;
-  } catch (e) {
-    say(`Failed: ${e.message || e}`);
-    if (btn) btn.disabled = false;
-    return false;
-  }
+  } catch (e) { say(`Failed: ${e.message || e}`); if (btn) btn.disabled = false; return false; }
+}
+async function kickServerTranscription() {
+  const { data: { session } } = await sb.auth.getSession();
+  const r = await fetch(`${SUPABASE_URL}/functions/v1/transcribe`, { method: 'POST', headers: { Authorization: `Bearer ${session?.access_token}`, apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json' }, body: '{"max":3}' });
+  return r.json().catch(() => null);
 }
 
-const escRe = (q) => q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// ---------- browser backup worker (admins): transcribes what the server can't, automatically ----------
+const txPrefs = () => { try { return JSON.parse(localStorage.getItem('coco.tx') || '{}'); } catch { return {}; } };
+const setTxPrefs = (p) => { try { localStorage.setItem('coco.tx', JSON.stringify({ ...txPrefs(), ...p })); } catch { /* ignore */ } };
+const txState = { busy: false, last: '', current: null };
+async function browserTranscribeTick(force = false) {
+  if (!isMgr() || txState.busy) return;
+  if (!force && (txPrefs().auto === false || document.hidden)) return;
+  txState.busy = true;
+  try {
+    const [job] = await rpc('claim_transcriptions', { p_mode: 'browser', p_limit: 1 });
+    if (!job) return;
+    txState.current = job; updateTxBadge();
+    try {
+      const paths = [job.agent_path, job.caller_path, job.audio_path].filter(Boolean);
+      const signed = Object.fromEntries((((await sb.storage.from('recordings').createSignedUrls(paths, 1800)).data) || []).map((x) => [x.path, x.signedUrl]));
+      const tr = await import('./transcriber.js');
+      const out = await tr.transcribeSources({ agentUrl: signed[job.agent_path], callerUrl: signed[job.caller_path], mixUrl: signed[job.audio_path], voicemail: job.kind === 'voicemail' },
+        { model: txPrefs().model || 'auto', onProgress: (t) => { txState.last = t; updateTxBadge(); } });
+      await rpc('complete_transcription', { p_job: job.job_id, p_text: out.text, p_provider: 'whisper-browser', p_answered_by: out.answeredBy });
+      txState.last = 'Saved ✓';
+    } catch (e) {
+      txState.last = `Failed: ${e.message || e}`;
+      await rpc('fail_transcription', { p_job: job.job_id, p_error: `browser: ${e.message || e}`, p_no_provider: false }).catch(() => {});
+    }
+  } catch { /* offline: next tick */ } finally {
+    txState.busy = false; txState.current = null; updateTxBadge();
+  }
+}
+function updateTxBadge() {
+  const a = document.querySelector('#navLinks a[data-k="recordings"]');
+  if (a) a.dataset.busy = txState.current ? '1' : '';
+  const el = $('#txLive');
+  if (el) el.textContent = txState.current ? `Transcribing in this browser: ${txState.last || '…'}` : txState.last ? `Last: ${txState.last}` : '';
+}
+setInterval(() => browserTranscribeTick(), 45e3);
+setTimeout(() => browserTranscribeTick(), 8e3);
 
-// ---------- recordings (admin): transcription queue + transcript search ----------
+// ---------- recordings (admin): automatic transcription status, jobs, search ----------
 async function renderRecordings(view) {
-  const [tr, queue] = await Promise.all([import('./transcriber.js'), rpc('transcription_queue', { p_limit: 200 })]);
-  const model = txModel();
+  const [tr, [ov], jobs] = await Promise.all([import('./transcriber.js'), rpc('transcription_overview', {}), rpc('transcription_jobs_list', { p_limit: 150 })]);
+  const s = state.settings;
+  const prefs = txPrefs();
+  const server = ov?.server || {};
+  const groqOn = server.provider === 'groq';
+  const statusLine = groqOn
+    ? `<span class="dot ok"></span> <b>Automatic on the server</b> — Groq ${esc(server.model || 'whisper-large-v3-turbo')}${server.last_ok_at ? ` · last transcript ${ago(server.last_ok_at)}` : ''}${server.last_error ? ` · <span style="color:var(--red)">last error: ${esc(server.last_error)}</span>` : ''}`
+    : `<span class="dot warn"></span> <b>Server transcription not set up</b> (no Groq key) — this dashboard transcribes automatically while an admin has it open.`;
+  const label = { pending: 'waiting', working: 'working…', failed: 'retrying', no_provider: 'browser', done: 'done' };
   view.innerHTML = `
     <div class="section-title"><h2>Recordings &amp; transcripts</h2>
-      <div class="row" style="align-items:center">
-        <select id="txModel" aria-label="Speech model" style="width:auto">${Object.entries(tr.MODELS).map(([k, l]) => `<option value="${k}" ${k === model ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
-        <button class="btn" id="txAll" ${queue.length ? '' : 'disabled'}>Transcribe all pending (${n(queue.length)})</button>
-      </div></div>
+      <div class="row" style="align-items:center"><button class="btn" id="txRun">Transcribe waiting now</button></div></div>
+    <div class="card"><h3>Automatic transcription</h3>
+      <p>${statusLine}</p>
+      <div class="kpis">${[['Waiting', Number(ov?.pending || 0) + Number(ov?.no_provider || 0)], ['Working', ov?.working], ['Retrying', ov?.failed], ['Done (24 h)', ov?.done_24h]].map(([l, v]) => `<div class="card kpi"><div class="txt"><div class="label">${l}</div><div class="value">${n(v)}</div></div></div>`).join('')}</div>
+      <div class="row" style="margin-top:10px;align-items:end">
+        <div><label class="check"><input type="checkbox" id="txAuto" ${prefs.auto !== false ? 'checked' : ''} style="width:auto"> Backup: transcribe in this browser when the server can't</label>
+          <div class="small muted" id="txLive"></div></div>
+        <div><label>Browser model</label><select id="txModel">${Object.entries(tr.MODELS).map(([k, l]) => `<option value="${k}" ${k === (prefs.model || 'auto') ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></div>
+      </div>
+      <div class="row">
+        <div><label>Call language</label><select id="txLang">${[['en', 'English'], ['es', 'Spanish'], ['ur', 'Urdu'], ['', 'Detect automatically']].map(([k, l]) => `<option value="${k}" ${k === (s.transcribe_language ?? 'en') ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+        <div style="flex:2"><label>Words to spell right (names, products, places)</label><input id="txPrompt" maxlength="400" value="${esc(s.transcribe_prompt || '')}" placeholder="Coco Voice, Pastry Marketing, …"></div>
+        <div><button class="btn dark" id="txSave">Save</button></div>
+      </div>
+      <p class="small muted">Every recorded call and voicemail is transcribed automatically right after it ends. Coco's own recordings keep each speaker separate, so lines read <i>Agent: … / Caller: …</i> and calls where a real person talked count as conversations even if they're short; calls that hit a voicemail greeting don't.
+      ${groqOn ? '' : '<br><b>Best accuracy:</b> add a free Groq key on the server (Whisper large-v3, no browser needed).'}</p>
+    </div>
     <div class="card"><h3>Search transcripts</h3>
       <div class="row"><input id="txQ" placeholder="Word or phrase, e.g. refund, price, cancel" style="max-width:420px" aria-label="Search transcripts"></div>
       <div id="txFound" class="table-wrap"></div>
       <p class="small muted">Searches call transcripts and voicemail text in the selected period${state.agent ? ' for the selected agent' : ''}.</p></div>
-    <div class="card"><h3>Waiting for a transcript</h3>
-      <div class="table-wrap"><table><thead><tr><th>When</th><th>Agent</th><th>Contact</th><th>Type</th><th class="num">Length</th><th></th></tr></thead>
-      <tbody>${queue.map((q) => `<tr data-id="${q.id}"><td>${fmtTime(q.occurred_at)}</td><td>${esc(q.agent_name)}</td><td>${esc(q.contact || '—')}</td><td>${esc(q.kind)}</td>
-        <td class="num">${q.duration_sec ? dur(q.duration_sec) : ''}</td><td style="white-space:nowrap"><button class="btn dark tx-btn">Transcribe</button><span class="small muted tx-msg"></span></td></tr>`).join('')
-        || '<tr><td colspan="6" class="empty">Every recording has a transcript 🎉</td></tr>'}</tbody></table></div></div>
-    <div class="card note small">
-      <b>How it works.</b> Transcription runs <b>on this computer</b> with Whisper (free and private: the audio never leaves your browser, only the text is saved).
-      The first run downloads the speech model once (then it is cached). Speed ≈ 10–60 s per minute of audio; Chrome/Edge with WebGPU is much faster.
-      Coco's own call recordings are two-channel (agent left, caller right), so transcripts read <i>Agent: … / Caller: …</i>. Keep this tab open while it works.
-    </div>`;
-  $('#txModel').addEventListener('change', (e) => { try { localStorage.setItem('coco.txModel', e.target.value); } catch { /* ignore */ } });
-  const rowOf = (row) => queue.find((q) => q.id === row.dataset.id);
-  view.querySelectorAll('tr[data-id] .tx-btn').forEach((btn) => btn.addEventListener('click', async () => {
-    if (await transcribeItem(rowOf(btn.closest('tr')), btn)) btn.closest('tr').classList.add('done');
-  }));
-  $('#txAll')?.addEventListener('click', async (e) => {
-    const all = e.currentTarget;
-    all.disabled = true;
-    let done = 0; let i = 0;
-    for (const row of view.querySelectorAll('tr[data-id]')) {
-      i++;
-      const btn = row.querySelector('.tx-btn');
-      if (btn.disabled || row.classList.contains('done')) continue;
-      all.textContent = `Transcribing ${i} of ${queue.length}…`;
-      if (await transcribeItem(rowOf(row), btn)) { row.classList.add('done'); done++; }
-      if (!all.isConnected) return; // left the page
-    }
-    all.textContent = `Done: ${n(done)} transcribed`;
+    <div class="card"><h3>Transcription jobs</h3>
+      <div class="table-wrap"><table><thead><tr><th>When</th><th>Agent</th><th>Contact</th><th>Type</th><th class="num">Length</th><th>Status</th><th>By</th><th></th></tr></thead>
+      <tbody>${jobs.map((j) => `<tr data-kind="${j.kind === 'recording' ? 'recording' : j.kind}" data-id="${j.ref_id}"${j.agent_id ? ` data-key="${j.agent_id}~${j.contact_id || ''}"` : ''}>
+        <td>${j.occurred_at ? fmtTime(j.occurred_at) : '—'}</td><td>${esc(j.agent_name || '—')}</td><td>${esc(j.contact || '—')}</td>
+        <td>${j.kind === 'recording' ? 'call (Coco)' : j.kind === 'call' ? 'call (Google)' : 'voicemail'}</td><td class="num">${j.duration_sec ? dur(j.duration_sec) : ''}</td>
+        <td><span class="badge ${j.status === 'done' ? 'good' : j.status === 'failed' ? 'high' : ''}">${label[j.status] || j.status}</span>${j.error && j.status !== 'done' ? `<div class="small muted" style="white-space:normal;max-width:260px">${esc(j.error)}</div>` : ''}</td>
+        <td class="small">${esc(TX_SOURCE[j.provider] || j.provider || '')}</td>
+        <td style="white-space:nowrap">${j.contact_id || j.agent_id ? '<button class="btn dark jOpen">Open</button> ' : ''}<button class="btn dark tx-btn jRedo">${j.status === 'done' ? 'Redo' : 'Now'}</button><span class="small muted tx-msg"></span></td></tr>`).join('')
+        || '<tr><td colspan="8" class="empty">No recordings yet</td></tr>'}</tbody></table></div></div>`;
+  updateTxBadge();
+  $('#txAuto').addEventListener('change', (e) => { setTxPrefs({ auto: e.target.checked }); if (e.target.checked) browserTranscribeTick(); });
+  $('#txModel').addEventListener('change', (e) => setTxPrefs({ model: e.target.value }));
+  $('#txSave').addEventListener('click', async () => {
+    const { data, error } = await sb.from('app_settings').update({ transcribe_language: $('#txLang').value, transcribe_prompt: $('#txPrompt').value.trim() }).eq('id', 1).select().single();
+    if (error) return toast(error.message);
+    state.settings = data; toast('Saved — used for the next transcripts');
+  });
+  $('#txRun').addEventListener('click', async (e) => {
+    e.currentTarget.disabled = true;
+    const r = await kickServerTranscription();
+    if (r?.handed_to_browser || !groqOn) await browserTranscribeTick(true);
+    toast(r?.done ? `${r.done} transcribed on the server` : 'Working on it — results appear here automatically');
+    route();
+  });
+  view.querySelectorAll('tr[data-id]').forEach((tr2) => {
+    $('.jRedo', tr2)?.addEventListener('click', (e) => requestTranscript(tr2.dataset.kind, tr2.dataset.id, e.currentTarget));
+    $('.jOpen', tr2)?.addEventListener('click', () => { location.hash = `#/conversations/${tr2.dataset.key}`; });
   });
   let timer;
   $('#txQ').addEventListener('input', () => {
@@ -1130,7 +1193,7 @@ async function renderRecordings(view) {
     }, 300);
   });
 }
-
+const escRe = (q) => q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // ---------- extension: download, versions, updates (everyone) ----------
 const semverNewer = (a, b) => {

@@ -3,12 +3,14 @@
 // - Observes the page's own WebRTC connection (never changes the call): caller audio = remote track,
 //   agent audio = the microphone track the page sends.
 // - Dual-channel file: agent on the LEFT, caller on the RIGHT (lets the transcript label who spoke).
-// - Opus/WebM via the browser's MediaRecorder (~32 kbps ≈ 14 MB per hour).
+// - Opus/WebM via the browser's MediaRecorder (~32 kbps ≈ 14 MB per hour) for playback, plus one small mono file per
+//   speaker (24 kbps each) so the server can transcribe each side separately ("Agent: … / Caller: …").
 // - Only records while the content script says recording is enabled (connected, not paused, admin switch on).
 // - The finished file is posted to the content script, which hands it to the service worker for upload.
 (() => {
-  const VERSION = 1;
-  if ((window.__cocoRecorder || 0) >= VERSION) return;
+  const VERSION = 2;
+  // one recorder per page: a page hooked by an older copy keeps it until Voice is reloaded (never record twice)
+  if (window.__cocoRecorder) return;
   window.__cocoRecorder = VERSION;
   const PC = window.RTCPeerConnection;
   if (!PC || !window.MediaRecorder || !window.AudioContext) return;
@@ -16,6 +18,7 @@
   const MIN_SEC = 2;                 // shorter = ringing blip, dropped
   const SEGMENT_SEC = 90 * 60;       // very long calls are split (upload limit 25 MB)
   const BITRATE = 32000;
+  const PART_BITRATE = 24000;
   let enabled = false;               // set by the content script (coco-ext / rec-config)
   const post = (msg) => window.postMessage({ source: 'coco-rec', ...msg }, window.location.origin);
   const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16)));
@@ -97,6 +100,7 @@
         this.merger = this.ctx.createChannelMerger(2);
         this.dest = this.ctx.createMediaStreamDestination();
         this.merger.connect(this.dest);
+        this.side = [this.ctx.createMediaStreamDestination(), this.ctx.createMediaStreamDestination()]; // agent, caller
         this.wire();
         this.mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'].find((m) => MediaRecorder.isTypeSupported(m)) || '';
         this.segment();
@@ -117,11 +121,18 @@
 
     /** Start a new file on the same audio graph. Each file keeps its own state (id, start, chunks). */
     segment() {
-      const mr = new MediaRecorder(this.dest.stream, { ...(this.mime ? { mimeType: this.mime } : {}), audioBitsPerSecond: BITRATE });
-      const rec = { mr, chunks: [], id: uuid(), startedAt: Date.now(), mime: this.mime || 'audio/webm' };
-      mr.ondataavailable = (e) => { if (e.data?.size) rec.chunks.push(e.data); };
-      mr.onstop = () => this.deliver(rec);
-      mr.start(5000);
+      const opts = (bps) => ({ ...(this.mime ? { mimeType: this.mime } : {}), audioBitsPerSecond: bps });
+      const rec = { id: uuid(), startedAt: Date.now(), mime: this.mime || 'audio/webm', open: 0, tracks: {} };
+      const add = (name, stream, bps) => {
+        const mr = new MediaRecorder(stream, opts(bps));
+        const t = { mr, chunks: [] };
+        mr.ondataavailable = (e) => { if (e.data?.size) t.chunks.push(e.data); };
+        mr.onstop = () => { if (--rec.open <= 0) this.deliver(rec); };
+        rec.tracks[name] = t; rec.open++;
+        mr.start(5000);
+      };
+      add('mix', this.dest.stream, BITRATE);
+      try { add('agent', this.side[0].stream, PART_BITRATE); add('caller', this.side[1].stream, PART_BITRATE); } catch { /* mixed file alone still works */ }
       this.cur = rec;
     }
 
@@ -136,7 +147,9 @@
           const a = new Audio(); a.muted = true; a.srcObject = stream; a.play().catch(() => {});
           this.keep.push(a);
         }
-        this.ctx.createMediaStreamSource(stream).connect(this.merger, 0, channel);
+        const src = this.ctx.createMediaStreamSource(stream);
+        src.connect(this.merger, 0, channel);
+        src.connect(this.side[channel]);
         this.connected.add(track.id);
       };
       this.localTracks().forEach((t) => add(t, 0));
@@ -152,7 +165,9 @@
 
     end(rec, last) {
       rec.endedAt = Date.now();
-      try { if (rec.mr.state !== 'inactive') rec.mr.stop(); else this.deliver(rec); } catch { this.deliver(rec); }
+      for (const t of Object.values(rec.tracks)) {
+        try { if (t.mr.state !== 'inactive') t.mr.stop(); else if (--rec.open <= 0) this.deliver(rec); } catch { if (--rec.open <= 0) this.deliver(rec); }
+      }
       if (last) {
         // let the recorder flush its last chunk before the audio graph is torn down
         clearInterval(this.timer); this.timer = null;
@@ -165,9 +180,11 @@
       if (rec.delivered) return;
       rec.delivered = true;
       const durationSec = Math.round(((rec.endedAt || Date.now()) - rec.startedAt) / 1000);
-      if (durationSec < MIN_SEC || !rec.chunks.length) return;
+      const blob = (name) => (rec.tracks[name]?.chunks.length ? new Blob(rec.tracks[name].chunks, { type: rec.mime }) : null);
+      const mix = blob('mix');
+      if (durationSec < MIN_SEC || !mix) return;
       diag.files++;
-      post({ type: 'recording', id: rec.id, startedAt: new Date(rec.startedAt).toISOString(), durationSec, mime: rec.mime, blob: new Blob(rec.chunks, { type: rec.mime }) });
+      post({ type: 'recording', id: rec.id, startedAt: new Date(rec.startedAt).toISOString(), durationSec, mime: rec.mime, blob: mix, agent: blob('agent'), caller: blob('caller') });
       report();
     }
 

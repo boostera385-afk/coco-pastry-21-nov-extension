@@ -23,11 +23,16 @@
     else if (d.type === 'diag') send({ type: 'rec-diag', diag: d.diag });
     else if (d.type === 'recording' && d.blob instanceof Blob) {
       // extension messages are JSON-only: send the audio as base64 (files are small: ~14 MB per hour max)
-      try {
-        const buf = new Uint8Array(await d.blob.arrayBuffer());
+      const b64 = async (blob) => {
+        if (!(blob instanceof Blob)) return null;
+        const buf = new Uint8Array(await blob.arrayBuffer());
         let bin = '';
         for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
-        send({ type: 'rec-file', id: d.id, startedAt: d.startedAt, durationSec: d.durationSec, mime: d.mime, b64: btoa(bin) });
+        return btoa(bin);
+      };
+      try {
+        send({ type: 'rec-file', id: d.id, startedAt: d.startedAt, durationSec: d.durationSec, mime: d.mime,
+          b64: await b64(d.blob), agentB64: await b64(d.agent), callerB64: await b64(d.caller) });
       } catch { /* ignore */ }
     }
   }
