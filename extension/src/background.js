@@ -3,6 +3,7 @@
 import { parseResponse, parseSendRequest, PARSER_VERSION } from './parser/gv-protojson.js';
 import { DEFAULT_TZ, summarize, dayKey } from './lib/metrics.js';
 import { INGEST_URL, TOKEN_RE, DASHBOARD_URL } from './config.js';
+import { putRecording, deleteRecording, listRecordings, countRecordings, b64ToBlob } from './lib/recstore.js';
 
 const KEEP_DAYS = 35;          // local history for the panel
 const BATCH = 100;
@@ -152,7 +153,7 @@ async function injectIntoOpenVoiceTabs() {
   const tabs = await chrome.tabs.query({ url: 'https://voice.google.com/*' });
   for (const t of tabs) {
     try {
-      await chrome.scripting.executeScript({ target: { tabId: t.id }, files: ['src/interceptor.js'], world: 'MAIN' });
+      await chrome.scripting.executeScript({ target: { tabId: t.id }, files: ['src/interceptor.js', 'src/recorder.js'], world: 'MAIN' });
       await chrome.scripting.executeScript({ target: { tabId: t.id }, files: ['src/content.js', 'src/widget.js'] });
     } catch { /* tab discarded or not ready: it gets scripts on next load */ }
   }
@@ -179,6 +180,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
         break;
       }
       case 'idb-census': await set({ idb: msg.dbs }); break;
+      case 'rec-state': await set({ recState: { on: !!msg.recording, at: Date.now() } }); break;
+      case 'rec-diag': await set({ recDiag: msg.diag }); break;
+      case 'rec-file': await onRecordingFile(msg); break;
       case 'page-load':
         if (msg.fresh) await set({ needsVoiceReload: false, pageLoadAt: Date.now(), capturesSinceLoad: 0, apiSinceLoad: 0 });
         await refreshStatus();
@@ -348,6 +352,7 @@ async function refreshStatus() {
   else if ((st.queue || []).length) { level = 'warn'; text = `${st.queue.length} waiting to sync`; }
 
   await set({ status: { level, text, at: Date.now(), voiceOpen }, summaryToday: summary });
+  if (!voiceOpen) { const { recState } = await get('recState'); if (recState?.on) await set({ recState: { on: false, at: Date.now() } }); }
 
   const colors = { ok: '#00843d', warn: '#ffba00', bad: '#cc3433', paused: '#777777' };
   await chrome.action.setBadgeBackgroundColor({ color: colors[level] });
@@ -374,7 +379,9 @@ chrome.alarms.onAlarm.addListener(async (a) => {
 /** Health + diagnostics sent with every sync (no message content, only counts and endpoint paths). */
 async function healthReport(health = {}) {
   await flushNet();
-  const x = await get(['status', 'net', 'capturesSinceLoad', 'apiSinceLoad', 'pageLoadAt', 'needsVoiceReload', 'paused', 'pausedAt', 'idb', 'debugRecord', 'samples', 'media', 'mediaStats']);
+  const x = await get(['status', 'net', 'capturesSinceLoad', 'apiSinceLoad', 'pageLoadAt', 'needsVoiceReload', 'paused', 'pausedAt', 'idb', 'debugRecord', 'samples', 'media', 'mediaStats',
+    'recordCalls', 'recStats', 'recDiag']);
+  const recPending = await countRecordings().catch(() => -1);
   return {
     ...health, sendChecks: undefined,
     paused: !!x.paused, status: x.status?.text || null,
@@ -383,6 +390,7 @@ async function healthReport(health = {}) {
     needsVoiceReload: !!x.needsVoiceReload, net: x.net || {}, idb: x.idb || [],
     recording: !!x.debugRecord, samples: (x.samples || []).length,
     audio: { ...(x.mediaStats || { uploaded: 0, failed: 0 }), pending: (x.media || []).length },
+    callRecording: { enabled: x.recordCalls !== false, pending: recPending, ...(x.recStats || { uploaded: 0, failed: 0 }), page: x.recDiag || null },
   };
 }
 
@@ -431,6 +439,55 @@ async function uploadMedia() {
   }
 }
 
+// ---------- call recordings made by the extension (Plan B) ----------
+async function onRecordingFile(msg) {
+  const st = await get(['agentToken', 'paused', 'recordCalls']);
+  if (!st.agentToken || st.paused || st.recordCalls === false) return;
+  if (!/^[0-9a-f-]{36}$/.test(msg.id || '') || typeof msg.b64 !== 'string') return;
+  await putRecording({ id: msg.id, startedAt: msg.startedAt, durationSec: msg.durationSec | 0, mime: String(msg.mime || 'audio/webm'),
+    blob: b64ToBlob(msg.b64, String(msg.mime || 'audio/webm').split(';')[0]), tries: 0, savedAt: Date.now() });
+  await set({ heartbeatPending: true });
+  // the call event usually arrives a few seconds later; upload after the next sync so it can be matched right away
+  clearTimeout(syncSoon); syncSoon = setTimeout(sync, 5000);
+}
+
+let recUploading = false;
+async function uploadRecordings() {
+  if (recUploading) return;
+  recUploading = true;
+  try {
+    const { agentToken } = await get(['agentToken']);
+    if (!agentToken) return;
+    const pending = (await listRecordings()).sort((a, b) => a.savedAt - b.savedAt).slice(0, 3);
+    for (const r of pending) {
+      let ok = false; let err = null;
+      try {
+        const q = new URLSearchParams({ rec: r.id, start: r.startedAt, dur: String(r.durationSec) });
+        const res = await fetch(`${INGEST_URL}?${q}`, {
+          method: 'POST', headers: { 'x-agent-token': agentToken, 'Content-Type': r.blob.type || 'audio/webm' }, body: r.blob,
+          signal: AbortSignal.timeout(180000),
+        });
+        const out = await res.json().catch(() => ({}));
+        if (res.status === 401 || res.status === 403) return; // token problem: keep the file, sync() reports it
+        if (!res.ok) throw new Error(out.error || `upload ${res.status}`);
+        ok = true; // stored, or skipped because the admin turned recording off
+      } catch (e) { err = String(e.message || e).slice(0, 80); }
+      const { recStats = { uploaded: 0, failed: 0 } } = await get('recStats');
+      if (ok) { await deleteRecording(r.id); recStats.uploaded++; }
+      else {
+        recStats.failed++; recStats.lastError = err;
+        // give up after ~2 days of retries (sync runs every minute, uploads back off with tries)
+        if (r.tries >= 40 || Date.now() - r.savedAt > 7 * 864e5) await deleteRecording(r.id);
+        else await putRecording({ ...r, tries: r.tries + 1 });
+      }
+      await set({ recStats });
+      if (!ok) break; // offline / server down: try again on the next sync
+    }
+  } catch { /* IndexedDB unavailable: nothing to do */ } finally {
+    recUploading = false;
+  }
+}
+
 let syncing = 0; // start time of the running sync (0 = idle)
 async function sync() {
   // a sync stuck for over 3 minutes is treated as dead, so syncing can never stop for good
@@ -440,7 +497,7 @@ async function sync() {
     const st = await get(['agentToken', 'queue', 'agentNumber', 'heartbeatPending', 'health', 'backoffUntil', 'trackingStart']);
     if (!st.agentToken) return { ok: false, error: 'Not connected' };
     if (st.backoffUntil && Date.now() < st.backoffUntil) return { ok: false, error: 'Waiting to retry' };
-    if (!(st.queue || []).length && !st.heartbeatPending) { uploadMedia(); return { ok: true, sent: 0 }; }
+    if (!(st.queue || []).length && !st.heartbeatPending) { uploadMedia(); uploadRecordings(); return { ok: true, sent: 0 }; }
 
     let sent = 0;
     let batch;
@@ -466,6 +523,7 @@ async function sync() {
       if (out.summary) await set({ serverSummary: out.summary, serverSummaryAt: Date.now() });
       if (out.config) {
         const upd = { timezone: out.config.timezone };
+        if (typeof out.config.record_calls === 'boolean') upd.recordCalls = out.config.record_calls;
         if (out.config.tracking_start) upd.trackingStart = Date.parse(out.config.tracking_start);
         await set(upd);
       }
@@ -480,6 +538,7 @@ async function sync() {
     await set({ lastSyncAt: Date.now(), lastSyncError: null, failures: 0, backoffUntil: 0 });
     await refreshStatus(); // status/badge reflect the empty queue right away
     uploadMedia();
+    uploadRecordings();
     return { ok: true, sent };
   } catch (e) {
     const { failures = 0 } = await get('failures');

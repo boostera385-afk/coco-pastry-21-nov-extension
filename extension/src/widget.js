@@ -45,14 +45,20 @@
   button.b.dark { background: #171717; color: #fff; border: 1px solid #262626; }
   button.b.stop { background: #cc3433; color: #fff; }
   button.b.go { background: #00843d; color: #fff; }
+  .rec { display: flex; align-items: center; gap: 6px; margin: 0 12px 8px; padding: 5px 8px; border-radius: 8px; background: #cc3433; color: #fff; font: 600 11px 'DM Sans', system-ui, Arial; }
+  .rec i { width: 8px; height: 8px; border-radius: 50%; background: #fff; animation: blink 1.2s infinite; }
+  .tab .r { width: 9px; height: 9px; border-radius: 50%; background: #cc3433; animation: blink 1.2s infinite; }
+  @keyframes blink { 50% { opacity: .25; } }
+  @media (prefers-reduced-motion: reduce) { .rec i, .tab .r { animation: none; } }
   .note { font-size: 10px; color: #8a8a8a; padding: 4px 12px 10px; }
 </style>
 <div class="wrap">
-  <div class="tab" part="tab" title="Coco Voice — click to open"><span class="dot"></span><span class="n">0</span><span class="v">COCO</span></div>
+  <div class="tab" part="tab" title="Coco Voice — click to open"><span class="dot"></span><span class="r" hidden title="This call is being recorded"></span><span class="n">0</span><span class="v">COCO</span></div>
   <div class="card" hidden>
     <div class="stripe"><i></i><i></i><i></i></div>
     <div class="hd"><div class="brand">COCO <span>VOICE</span></div><button class="x" title="Close (keeps tracking)">×</button></div>
     <div class="st"><span class="dot"></span><span class="stt">…</span></div>
+    <div class="rec" hidden role="status"><i></i>REC · this call is being recorded</div>
     <div class="grid">
       <div class="k hero"><div class="l">Outbound today (calls + texts)</div><div class="num" data-k="outboundTotal">0</div></div>
       <div class="k"><div class="l">Calls out</div><div class="num" data-k="outboundCalls">0</div></div>
@@ -83,6 +89,9 @@
     const pause = $('[data-a="pause"]');
     pause.textContent = state.paused ? 'Resume' : 'Pause';
     pause.className = `b ${state.paused ? 'go' : 'stop'}`;
+    const rec = state.recState?.on === true && Date.now() - (state.recState.at || 0) < 4 * 3600e3;
+    $('.rec').hidden = !rec;
+    $('.tab .r').hidden = !rec;
     const open = state.widgetOpen === true;
     card.hidden = !open;
     tab.hidden = open;
@@ -91,7 +100,7 @@
 
   const load = async () => {
     if (!alive()) return;
-    state = await chrome.storage.local.get(['summaryToday', 'status', 'paused', 'showWidget', 'widgetOpen']);
+    state = await chrome.storage.local.get(['summaryToday', 'status', 'paused', 'showWidget', 'widgetOpen', 'recState']);
     render();
   };
   const save = (obj) => { if (alive()) chrome.storage.local.set(obj); };

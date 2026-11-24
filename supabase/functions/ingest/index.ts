@@ -30,24 +30,52 @@ Deno.serve(async (req) => {
   if (!/^coco_[0-9a-f]{48}$/.test(token)) return json({ error: 'missing or malformed token' }, 401);
 
   const { data: agent, error: agentErr } = await supabase
-    .from('agents').select('id, active, name').eq('token_hash', await sha256(token)).maybeSingle();
+    .from('agents').select('id, active, name, record_calls').eq('token_hash', await sha256(token)).maybeSingle();
   if (agentErr) return json({ error: 'lookup failed' }, 500);
   if (!agent) return json({ error: 'invalid token' }, 401);
   if (!agent.active) return json({ error: 'deactivated', message: 'Tracking is turned off for this agent by your admin' }, 403);
 
+  const params = new URL(req.url).searchParams;
+  const audioExt = (type: string) => (type.includes('mpeg') || type.includes('mp3') ? 'mp3' : type.includes('mp4') || type.includes('aac') ? 'm4a'
+    : type.includes('ogg') ? 'ogg' : type.includes('wav') ? 'wav' : type.includes('webm') ? 'webm' : type.includes('amr') ? 'amr' : 'bin');
+  const saveRecordings = async () => {
+    const { data: cfg } = await supabase.from('app_settings').select('save_recordings').eq('id', 1).maybeSingle();
+    return !(cfg && cfg.save_recordings === false);
+  };
+
+  // ---- call recording made by the extension itself: POST ?rec=<uuid>&start=<iso>&dur=<sec> ----
+  const rec = params.get('rec');
+  if (rec !== null) {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(rec)) return json({ error: 'bad recording id' }, 400);
+    const start = Date.parse(params.get('start') ?? '');
+    if (!Number.isFinite(start) || start > Date.now() + 5 * 60e3) return json({ error: 'bad start time' }, 400);
+    const dur = Math.max(0, Math.min(6 * 3600, Math.round(Number(params.get('dur')) || 0)));
+    if (agent.record_calls === false || !(await saveRecordings())) return json({ ok: true, skipped: 'call recording is turned off by the admin' });
+    const type = (req.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
+    if (!/^audio\//.test(type)) return json({ error: 'audio only' }, 415);
+    const bytes = new Uint8Array(await req.arrayBuffer());
+    if (!bytes.length || bytes.length > 25 * 1024 * 1024) return json({ error: 'empty or too large (25 MB max)' }, 413);
+    const path = `${agent.id}/rec-${rec}.${audioExt(type)}`;
+    const up = await supabase.storage.from('recordings').upload(path, bytes, { contentType: type, upsert: true });
+    if (up.error) return json({ error: `storage: ${up.error.message}` }, 500);
+    const ins = await supabase.from('call_recordings').upsert({ id: rec, agent_id: agent.id, started_at: new Date(start).toISOString(),
+      duration_sec: dur, bytes: bytes.length, path }, { onConflict: 'id' });
+    if (ins.error) return json({ error: ins.error.message }, 500);
+    const { data: matched } = await supabase.rpc('match_call_recordings', { p_agent: agent.id });
+    return json({ ok: true, path, matched: matched ?? 0 });
+  }
+
   // ---- audio upload: POST ?media=<gv_id>  (voicemail / call recording copied by the extension) ----
-  const media = new URL(req.url).searchParams.get('media');
+  const media = params.get('media');
   if (media !== null) {
     if (!/^[A-Za-z0-9_.-]{6,80}$/.test(media)) return json({ error: 'bad media id' }, 400);
     // admin switch (Dashboard -> Settings): when off, audio is not stored; the extension stops retrying
-    const { data: cfg } = await supabase.from('app_settings').select('save_recordings').eq('id', 1).maybeSingle();
-    if (cfg && cfg.save_recordings === false) return json({ ok: true, skipped: 'recording storage is turned off by the admin' });
+    if (!(await saveRecordings())) return json({ ok: true, skipped: 'recording storage is turned off by the admin' });
     const type = (req.headers.get('content-type') ?? 'application/octet-stream').split(';')[0].trim().toLowerCase();
     if (!/^audio\/|^application\/octet-stream$/.test(type)) return json({ error: 'audio only' }, 415);
     const bytes = new Uint8Array(await req.arrayBuffer());
     if (!bytes.length || bytes.length > 25 * 1024 * 1024) return json({ error: 'empty or too large (25 MB max)' }, 413);
-    const ext = type.includes('mpeg') || type.includes('mp3') ? 'mp3' : type.includes('mp4') || type.includes('aac') ? 'm4a'
-      : type.includes('ogg') ? 'ogg' : type.includes('wav') ? 'wav' : type.includes('webm') ? 'webm' : type.includes('amr') ? 'amr' : 'bin';
+    const ext = audioExt(type);
     const path = `${agent.id}/${media}.${ext}`;
     const up = await supabase.storage.from('recordings').upload(path, bytes, { contentType: type, upsert: true });
     if (up.error) return json({ error: `storage: ${up.error.message}` }, 500);
@@ -72,5 +100,8 @@ Deno.serve(async (req) => {
     p_client_start: typeof body.tracking_start === 'string' ? body.tracking_start : null,
   });
   if (error) return json({ error: error.message }, 500);
-  return json({ ...data, agent: { name: agent.name } });
+  // recordings uploaded before their call was synced get linked now (cheap: only unmatched rows)
+  if (events.length) await supabase.rpc('match_call_recordings', { p_agent: agent.id });
+  const recordCalls = agent.record_calls !== false && (await saveRecordings());
+  return json({ ...data, config: { ...(data?.config ?? {}), record_calls: recordCalls }, agent: { name: agent.name } });
 });

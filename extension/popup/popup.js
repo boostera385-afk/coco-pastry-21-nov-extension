@@ -34,7 +34,9 @@ async function render() {
   $('dot').className = `dot ${DOT[level] ?? ''}`;
   $('statusText').textContent = st.status?.text || 'Starting…';
   $('who').textContent = st.agentToken ? `Connected as ${st.agentName || 'agent'}${st.agentNumber ? ` · ${st.agentNumber}` : ''}` : '';
-  $('statusSub').textContent = st.agentToken ? `Last sync ${ago(st.lastSyncAt)}${st.lastSyncError ? ` · ${st.lastSyncError}` : ''} · numbers ${serverFresh ? 'from dashboard' : 'local (not yet synced)'}` : '';
+  const recOn = st.recState?.on === true && Date.now() - (st.recState.at || 0) < 4 * 3600e3;
+  const recTxt = !st.agentToken ? '' : st.recordCalls === false ? ' · call recording off (admin)' : recOn ? ' · ● recording this call' : ' · calls are recorded';
+  $('statusSub').textContent = st.agentToken ? `Last sync ${ago(st.lastSyncAt)}${st.lastSyncError ? ` · ${st.lastSyncError}` : ''} · numbers ${serverFresh ? 'from dashboard' : 'local (not yet synced)'}${recTxt}` : '';
   $('openVoiceBox').hidden = !st.agentToken || st.paused || !(st.status?.voiceOpen === false || /Open Google Voice/i.test(st.status?.text || ''));
   $('goVoice').classList.toggle('attn', st.status?.voiceOpen === false && !!st.agentToken && !st.paused);
   $('setup').hidden = !!st.agentToken;

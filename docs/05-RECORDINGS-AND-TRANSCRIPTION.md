@@ -1,52 +1,63 @@
-# Recordings & transcription — plan and status
+# Recordings & transcription
 
-_Decided 2026-11-23._ **Wait for the first real recorded call.** If Google provides its own transcript, nothing more
-is needed. If not, build **Option 2** (in-browser Whisper "Transcribe" button).
+_Updated 2026-11-24._ **Plan B is live: Coco records calls itself.** No Google Workspace admin setting is needed, so it
+works on every agent's business Voice account, whether or not their Workspace allows Google's own recording.
 
-## Current status
+## How it works
 
-| Item | Status |
-|---|---|
-| Voicemail audio copied to private storage (`recordings` bucket, admin-only) | Built, tested (`tests/e2e/media.mjs`) |
-| Voicemail transcript from Google (message field @21) | Built — shown as the voicemail text |
-| Admin switch "Save voicemail and call-recording audio" | Built (Settings → Call recordings & voicemails) |
-| Live call recording | **Waiting** — must be enabled by a Workspace admin in Google Admin → Apps → Google Workspace → Google Voice → Call recording |
-| Call-recording transcript | **Unknown** — verify on the first recorded call |
+| Step | Where | Detail |
+|---|---|---|
+| Record | Extension (`src/recorder.js`, page script) | Watches Google Voice's own WebRTC call (never changes it). Agent mic → **left** channel, caller → **right** channel. Opus/WebM, 32 kbps (≈14 MB per hour). Calls over 90 min are split into parts. Calls under 2 s are dropped. |
+| Hand-off | `src/content.js` → service worker | File goes to an IndexedDB queue (`src/lib/recstore.js`). It survives offline time, a closed tab and browser restarts. |
+| Upload | `ingest?rec=<uuid>&start=&dur=` | Stored as `recordings/<agent>/rec-<uuid>.webm` (private bucket, admins only). Row in `call_recordings`. |
+| Link to call | `match_call_recordings()` | Matched by time: the call starts up to 3 min before audio flows. Runs on upload and after every synced batch, so the order doesn't matter. If Google's own recording exists, Google's copy stays on the call. |
+| Transcribe | Dashboard → **Recordings** (or **Transcribe** in Conversations) | Whisper runs **in the admin's browser** (Transformers.js 4.3.2, `dashboard/whisper-worker.js`). Each channel is transcribed separately and merged into `[0:05] Agent: … / Caller: …`. Saved with `save_transcript()` (admin only). |
+| Search | Recordings → Search transcripts | `search_transcripts()` covers call transcripts and voicemail text. |
 
-## Step 1 — verify with the first recorded call (do this first)
+### Switches
 
-1. Workspace admin enables Call recording for the agent's organisational unit.
-2. Agent makes one test call and records it (Google announces the recording to the caller).
-3. Agent opens Voice → Calls (so the thread loads), then downloads samples from the extension Settings page.
-4. Check in the samples / `raw_events`:
-   - the call message has an audio URL at index 11 (`https://www.google.com/voice/media/...`) → the extension uploads it automatically (`calls.recording_path`);
-   - whether index 21 holds transcript text for the call.
-5. Confirm the recording plays in Dashboard → Conversations for that contact.
+- **Per agent:** Settings → Agents → *Call recording* (default **on**). Reaches the extension on its next sync (≤1 min).
+- **Master:** Settings → *Save call recordings and voicemail audio* (`app_settings.save_recordings`).
+- Paused or disconnected extension = nothing is recorded.
+- While recording, the in-page widget shows a red **REC** badge and the side panel says "recording this call".
 
-**If Google's transcript is present:** store it in `calls.transcript` (the parser already emits `transcript` for calls;
-`ingest_batch` still needs to write it — small change) and stop here.
+### Consent (important)
 
-**If there is no transcript:** go to Step 2.
+Many US states require **all parties** to agree to recording. Agents should say *"this call may be recorded"*
+at the start of every call. The REC badge only tells the agent; it does not tell the caller.
 
-## Step 2 — Option 2: in-browser Whisper (free, private)
+### Transcription details
 
-- Library: Transformers.js (`@huggingface/transformers`, Whisper models, MIT licence), loaded from a CDN in the dashboard.
-- Admin clicks **Transcribe** on a recording in Conversations → the browser downloads the audio via its signed URL,
-  runs Whisper locally (WebGPU, falls back to WASM) and saves the text to `calls.transcript` / `messages.body`.
-- Cost $0; audio never leaves our system. First use downloads the model once (≈40–250 MB by size, then cached).
-  Speed on a normal laptop ≈10–60 s per minute of audio. Fine for a few calls per day.
-- Needs approval before adding the library (new dependency).
+- Models: `whisper-base.en` (fast, ~80 MB, default), `whisper-small.en` (more accurate, ~250 MB) and `whisper-base`
+  (any language). Downloaded from Hugging Face once, then cached by the browser.
+- WebGPU when available (Chrome/Edge), WebAssembly otherwise. Roughly 10–60 s per minute of audio. Verified on a real
+  voicemail: 78 s including the first model download.
+- A silent channel (for example a muted mic) is skipped, so Whisper doesn't make up words.
+- Voicemails: Google's own transcript is used when present. Otherwise Whisper fills `messages.body` (`transcript_source = 'whisper'`).
+
+### Known limits
+
+- Only calls made **in the browser** (voice.google.com) can be recorded. Calls answered on a phone or the mobile app
+  bypass the browser. Google's own recording, if enabled, still covers those.
+- If the Voice tab is closed **during** a call, that call's audio is lost (the file is built when the call ends).
+- Transcription only runs while an admin has the Recordings page open. If volume grows, the same worker code can run
+  on an always-on PC (Option 3 below).
+
+## Tests
+
+- `node tests/e2e/recording.mjs` (33 checks): a loopback WebRTC call in a mocked Voice page. It checks that the extension
+  records, uploads and links the file to the call, that both channels contain audio, that the admin switch stops
+  recording, and it also covers transcript permissions, shifts, the busiest-times grid and team stats.
+- `node tests/e2e/transcribe.mjs`: read-only. Runs in-browser Whisper on the newest recording waiting for a transcript.
+- `node --test tests/unit`: transcript merge (Agent/Caller interleaving).
 
 ## Later options (only if volume grows)
 
-- **Option 3:** faster-whisper / whisper.cpp script on an always-on PC or small server: polls storage for
-  untranscribed recordings, writes text back. Free, private, automatic.
-- **Option 4:** hosted APIs (Groq Whisper, Google Speech-to-Text, Azure, Deepgram, AssemblyAI, Cloudflare Workers AI).
-  Free tiers are limited/trial credit, and customer audio leaves our system — check privacy obligations first.
-- Not Claude: Claude does not transcribe audio, and Claude analysis is on hold (department rule).
+- **Option 3:** faster-whisper / whisper.cpp on an always-on PC: polls `transcription_queue()`, writes with the service key.
+- **Option 4:** hosted APIs (Groq, Deepgram, AssemblyAI…). Faster, but customer audio leaves our system and they cost money.
 
-## Counting rules (for reference)
+## Counting rules (unchanged)
 
-Incoming call outcomes are separate: **answered / missed / voicemail**; *Calls in* = all three. Google stores a call
-that went to voicemail only as the voicemail, so a voicemail counts as one incoming call (deduped against an inbound
-call from the same number within the previous 5 minutes). See migrations `20261123140000` and `20261123160000`.
+Incoming call outcomes are separate: **answered / missed / voicemail**; *Calls in* = all three. A voicemail counts as one
+incoming call (deduped against an inbound call from the same number in the previous 5 minutes). See migrations
+`20261123140000` and `20261123160000`.

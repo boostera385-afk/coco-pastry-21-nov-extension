@@ -18,7 +18,7 @@ const URL_ = env.SUPABASE_URL;
 const ANON = fs.readFileSync(path.join(DASH, 'config.js'), 'utf8').match(/eyJ[^']+/)[0];
 const PORT = 9334; const WEB = 5599;
 const WIDTHS = [1400, 960, 760, 390];
-const PAGES = ['overview', 'contacts', 'conversations', 'analysis', 'settings', 'extension', 'account'];
+const PAGES = ['overview', 'contacts', 'conversations', 'analysis', 'recordings', 'settings', 'extension', 'account'];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function waitFor(fn, ms = 15000) { const end = Date.now() + ms; while (Date.now() < end) { try { const v = await fn(); if (v) return v; } catch { /* retry */ } await sleep(250); } return null; }
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json' };
@@ -50,7 +50,9 @@ try {
   const s = await cdp.attach(targetId);
   await waitFor(() => cdp.eval(s, "!!document.getElementById('pwForm') && document.readyState === 'complete'"), 20000);
   await cdp.eval(s, `document.getElementById('email').value = ${JSON.stringify(email)}; document.getElementById('password').value = ${JSON.stringify(pw)}; document.querySelector('#pwForm button[type=submit]').click(); true`);
-  if (!await waitFor(() => cdp.eval(s, "!document.getElementById('app').hidden && !!document.querySelector('.kpis')"), 20000)) throw new Error('sign-in failed');
+  if (!await waitFor(() => cdp.eval(s, "!document.getElementById('app').hidden && !!document.querySelector('.kpis')"), 20000)) {
+    throw new Error(`sign-in failed: ${await cdp.eval(s, "(document.getElementById('view')?.textContent || document.getElementById('loginMsg')?.textContent || '').trim().slice(0, 300)")}`);
+  }
   if (process.env.SHOTS) { // first sign-in guide
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 760, deviceScaleFactor: 1, mobile: false }, s);
     await waitFor(() => cdp.eval(s, "!!document.querySelector('dialog#setupGuide[open]')"), 5000);
@@ -70,13 +72,15 @@ try {
           if (e.closest('.table-wrap, .timeline, .list, .links') && !e.matches('.table-wrap, .timeline, .list, .links')) return false;
           const b = e.getBoundingClientRect(); return b.width && b.right > W + 1 && getComputedStyle(e).position !== 'fixed';
         }).slice(0, 3).map((e) => e.tagName.toLowerCase() + (e.className && typeof e.className === 'string' ? '.' + e.className.split(' ')[0] : '') + ' ' + Math.round(e.getBoundingClientRect().right));
-        return { W, sw: document.documentElement.scrollWidth, wide };
+        const err = /Something went wrong/.test(document.getElementById('view')?.textContent || '') ? document.getElementById('view').textContent.trim().slice(0, 200) : '';
+        return { W, sw: document.documentElement.scrollWidth, wide, err };
       })()`);
-      const ok = r.sw <= r.W + 1 && !r.wide.length;
+      const ok = r.sw <= r.W + 1 && !r.wide.length && !r.err;
       if (!ok) fails++;
-      console.log(`${ok ? 'PASS' : 'FAIL'}  ${String(w).padStart(4)}px ${p.padEnd(13)}${ok ? '' : ` scrollWidth ${r.sw} > ${r.W}  ${r.wide.join(' | ')}`}`);
-      if (process.env.SHOTS && (p === 'overview' || (p === 'extension' && w === 1400))) {
-        const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' }, s);
+      console.log(`${ok ? 'PASS' : 'FAIL'}  ${String(w).padStart(4)}px ${p.padEnd(13)}${ok ? '' : r.err ? ` page error: ${r.err}` : ` scrollWidth ${r.sw} > ${r.W}  ${r.wide.join(' | ')}`}`);
+      if (process.env.SHOTS && (p === 'overview' || ((p === 'extension' || p === 'recordings' || p === 'settings' || p === 'analysis') && w === 1400))) {
+        const { contentSize } = await cdp.send('Page.getLayoutMetrics', {}, s);
+        const { data } = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y: 0, width: w, height: Math.min(6000, Math.ceil(contentSize.height)), scale: 1 } }, s);
         fs.writeFileSync(path.join(process.env.SHOTS, `${p}-${w}.png`), Buffer.from(data, 'base64'));
       }
     }

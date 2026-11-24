@@ -271,6 +271,17 @@ async function main() {
   check('dashboard avg reply time = 5 min (A texted, agent called 5 min later)', Number(m?.avg_reply_min) === 5, `got ${m?.avg_reply_min}`);
   const daily = await rest(adminJwt, 'rpc/metrics_daily', { p_from: todayKey, p_to: todayKey, p_agent: agentId });
   check('dashboard daily trend row for today (outbound 5, inbound 5)', Number(daily?.[0]?.outbound_total) === 5 && Number(daily?.[0]?.inbound_total) === 5, JSON.stringify(daily));
+  // exact time ranges: hourly buckets add up to the day; a window with no activity returns 0
+  const dayStart = new Date(`${todayKey}T00:00:00+05:00`).toISOString();
+  const dayEnd = new Date(Date.parse(dayStart) + 864e5).toISOString();
+  const hourly = await rest(adminJwt, 'rpc/metrics_timeline', { p_from_ts: dayStart, p_to_ts: dayEnd, p_agent: agentId, p_bucket: 'hour' });
+  const sumH = (hourly || []).reduce((t, r) => t + Number(r.outbound_total), 0);
+  check('hourly trend: 24 buckets that add up to the day total (5 outbound)', hourly?.length === 24 && sumH === 5, `${hourly?.length} buckets, sum ${sumH}`);
+  const emptyWin = await rest(adminJwt, 'rpc/metrics_summary', { p_from: todayKey, p_to: todayKey, p_agent: agentId, p_from_ts: dayStart, p_to_ts: new Date(Date.parse(dayStart) + 60e3).toISOString() });
+  const busiest = (hourly || []).reduce((b, r) => (Number(r.outbound_total) > Number(b?.outbound_total || 0) ? r : b), null);
+  const bStart = busiest ? new Date(`${busiest.bucket}+05:00`).toISOString() : dayStart;
+  const oneHour = await rest(adminJwt, 'rpc/metrics_summary', { p_from: todayKey, p_to: todayKey, p_agent: agentId, p_from_ts: bStart, p_to_ts: new Date(Date.parse(bStart) + 3600e3).toISOString() });
+  check('time window filter: 1-minute window = 0, busiest hour = its bucket count', Number(emptyWin?.[0]?.outbound_total ?? 0) === 0 && Number(oneHour?.[0]?.outbound_total) === Number(busiest?.outbound_total), `empty ${emptyWin?.[0]?.outbound_total}, hour ${oneHour?.[0]?.outbound_total} vs ${busiest?.outbound_total}`);
   const contacts = await rest(adminJwt, 'rpc/contact_activity', { p_from: todayKey, p_to: todayKey, p_agent: agentId, p_search: null });
   const cA = (contacts || []).find((c) => c.contact === F.A);
   check('contacts: one row per contact (A, B, D, G1, E)', Array.isArray(contacts) && contacts.length === 5, `got ${contacts?.length}`);
@@ -360,6 +371,11 @@ async function main() {
     tile.Outbound === '11' && tile['Calls out'] === '3' && tile['Texts out'] === '8' && tile.Inbound === '6' && tile['Calls in'] === '2' && tile['Texts in'] === '3', JSON.stringify(tile));
   const callsInRed = await cdp.eval(dS, "[...document.querySelectorAll('.kpis .kpi')].find((k) => k.textContent.includes('Calls in'))?.classList.contains('r')");
   check('dashboard UI: "Calls in" tile is red when calls were missed', callsInRed === true);
+  await cdp.eval(dS, "document.querySelector('#range [data-r=\"1h\"]').click(); true");
+  const lastHour = await waitFor(() => cdp.eval(dS, "(document.querySelector('.section-title h2')?.textContent || '').includes('Last hour') && document.querySelector('.chart h3')?.textContent"), 10000);
+  check('dashboard UI: "1 h" preset shows "Last hour" with an hourly trend', /Hourly/.test(lastHour || ''), String(lastHour));
+  await cdp.eval(dS, "document.querySelector('#range [data-r=today]').click(); true");
+  await waitFor(() => cdp.eval(dS, "!(document.querySelector('.section-title h2')?.textContent || '').includes('Last hour') && !!document.querySelector('.insights')"), 10000);
   const insightText = await cdp.eval(dS, "document.querySelector('.insights')?.textContent || ''");
   check('dashboard UI: analysis panel mentions the missed call', /missed/.test(insightText), insightText.slice(0, 160));
   const agentRow = await cdp.eval(dS, "[...document.querySelectorAll('tbody tr')].map((r) => r.textContent).find((t) => t.includes('E2E Bot')) || ''");

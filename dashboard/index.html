@@ -69,14 +69,23 @@
     <div class="update-banner" id="updateBanner" role="status" hidden></div>
 
     <section class="hero-band" id="filters">
-      <div class="seg" id="range">
+      <div class="seg" id="range" role="group" aria-label="Time range">
+        <button data-r="1h" title="Last 60 minutes">1 h</button>
+        <button data-r="4h" title="Last 4 hours">4 h</button>
         <button data-r="today">Today</button>
+        <button data-r="yesterday">Yesterday</button>
         <button data-r="7d" class="on">7 days</button>
         <button data-r="30d">30 days</button>
+        <button data-r="month" title="From the 1st of this month">This month</button>
+        <button data-r="shift" title="The selected agent's latest shift (set shifts in Settings → Agents)">Shift</button>
         <button data-r="custom">Custom</button>
       </div>
-      <span id="customRange" hidden>
-        <input type="date" id="from"> <input type="date" id="to">
+      <span id="customRange" class="custom-range" hidden>
+        <label class="sr-only" for="from">From date</label><input type="date" id="from" aria-label="From date">
+        <input type="time" id="fromT" value="00:00" step="900" aria-label="From time">
+        <span aria-hidden="true">→</span>
+        <label class="sr-only" for="to">To date</label><input type="date" id="to" aria-label="To date">
+        <input type="time" id="toT" value="23:59" step="900" aria-label="To time">
       </span>
       <select id="agentFilter"><option value="">All agents</option></select>
       <span class="small tz" id="tzLabel"></span>

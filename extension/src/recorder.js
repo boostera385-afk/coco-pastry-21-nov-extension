@@ -1,0 +1,209 @@
+// Runs in the PAGE (MAIN world) on voice.google.com at document_start.
+// Plan B call recording: records Google Voice browser calls itself, so no Workspace admin setting is needed.
+// - Observes the page's own WebRTC connection (never changes the call): caller audio = remote track,
+//   agent audio = the microphone track the page sends.
+// - Dual-channel file: agent on the LEFT, caller on the RIGHT (lets the transcript label who spoke).
+// - Opus/WebM via the browser's MediaRecorder (~32 kbps ≈ 14 MB per hour).
+// - Only records while the content script says recording is enabled (connected, not paused, admin switch on).
+// - The finished file is posted to the content script, which hands it to the service worker for upload.
+(() => {
+  const VERSION = 1;
+  if ((window.__cocoRecorder || 0) >= VERSION) return;
+  window.__cocoRecorder = VERSION;
+  const PC = window.RTCPeerConnection;
+  if (!PC || !window.MediaRecorder || !window.AudioContext) return;
+
+  const MIN_SEC = 2;                 // shorter = ringing blip, dropped
+  const SEGMENT_SEC = 90 * 60;       // very long calls are split (upload limit 25 MB)
+  const BITRATE = 32000;
+  let enabled = false;               // set by the content script (coco-ext / rec-config)
+  const post = (msg) => window.postMessage({ source: 'coco-rec', ...msg }, window.location.origin);
+  const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16)));
+  const diag = { pcs: 0, sessions: 0, files: 0, errors: 0, lastError: null };
+  const report = () => post({ type: 'diag', diag: { ...diag, enabled } });
+
+  window.addEventListener('message', (ev) => {
+    if (ev.source !== window || ev.data?.source !== 'coco-ext' || ev.data.type !== 'rec-config') return;
+    const was = enabled;
+    enabled = !!ev.data.enabled;
+    if (was && !enabled) sessions.forEach((s) => s.stop()); // switched off mid-call: keep what was recorded
+    if (!was && enabled) sessions.forEach((s) => s.maybeStart());
+  });
+
+  // Microphone tracks the page opened (fallback when the sender track isn't visible yet).
+  const mics = new Set();
+  const gum = navigator.mediaDevices?.getUserMedia?.bind(navigator.mediaDevices);
+  if (gum) {
+    navigator.mediaDevices.getUserMedia = async function (constraints) {
+      const stream = await gum(constraints);
+      try {
+        stream.getAudioTracks().forEach((t) => { mics.add(t); t.addEventListener('ended', () => mics.delete(t)); });
+      } catch { /* never break the page */ }
+      return stream;
+    };
+  }
+
+  const sessions = new Map(); // RTCPeerConnection -> Session
+
+  class Session {
+    constructor(pc) {
+      this.pc = pc;
+      this.remote = new Map(); // track id -> track
+      this.ctx = null; this.cur = null; this.connected = new Set(); this.keep = [];
+      this.timer = null;
+      diag.pcs++;
+      pc.addEventListener('track', (e) => { if (e.track.kind === 'audio') this.addRemote(e.track); });
+      const onState = () => {
+        const s = pc.connectionState || pc.iceConnectionState;
+        if (s === 'connected' || s === 'completed') this.maybeStart();
+        if (s === 'closed' || s === 'failed') this.stop();
+      };
+      pc.addEventListener('connectionstatechange', onState);
+      pc.addEventListener('iceconnectionstatechange', onState);
+    }
+
+    addRemote(track) {
+      if (this.remote.has(track.id)) return;
+      this.remote.set(track.id, track);
+      track.addEventListener('ended', () => {
+        if ([...this.remote.values()].every((t) => t.readyState === 'ended')) this.stop();
+      });
+      if (this.cur) this.wire(); else this.maybeStart();
+    }
+
+    localTracks() {
+      const sent = this.pc.getSenders().map((s) => s.track).filter((t) => t && t.kind === 'audio' && t.readyState === 'live');
+      if (sent.length) return sent;
+      const live = [...mics].filter((t) => t.readyState === 'live');
+      return live.slice(-1);
+    }
+
+    maybeStart() {
+      if (this.cur || this.ctx || !enabled) return;
+      try { this.pc.getReceivers().forEach((r) => { if (r.track?.kind === 'audio' && r.track.readyState === 'live') this.addRemoteSilently(r.track); }); } catch { /* ignore */ }
+      const s = this.pc.connectionState || this.pc.iceConnectionState;
+      if (!this.remote.size || !(s === 'connected' || s === 'completed')) return;
+      this.start();
+    }
+
+    addRemoteSilently(track) { if (!this.remote.has(track.id)) this.remote.set(track.id, track); }
+
+    get active() { return !!this.cur; }
+
+    start() {
+      try {
+        this.ctx = new AudioContext();
+        this.ctx.resume?.().catch(() => {});
+        this.merger = this.ctx.createChannelMerger(2);
+        this.dest = this.ctx.createMediaStreamDestination();
+        this.merger.connect(this.dest);
+        this.wire();
+        this.mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'].find((m) => MediaRecorder.isTypeSupported(m)) || '';
+        this.segment();
+        // pick up a mic that appears after the call connected; split very long calls
+        this.timer = setInterval(() => {
+          this.wire();
+          if (this.cur && (Date.now() - this.cur.startedAt) / 1000 > SEGMENT_SEC) { const old = this.cur; this.segment(); this.end(old, false); }
+        }, 2000);
+        diag.sessions++;
+        post({ type: 'state', recording: true, startedAt: this.cur.startedAt });
+        report();
+      } catch (e) {
+        diag.errors++; diag.lastError = String(e?.message || e).slice(0, 120); report();
+        this.cur = null;
+        this.cleanup();
+      }
+    }
+
+    /** Start a new file on the same audio graph. Each file keeps its own state (id, start, chunks). */
+    segment() {
+      const mr = new MediaRecorder(this.dest.stream, { ...(this.mime ? { mimeType: this.mime } : {}), audioBitsPerSecond: BITRATE });
+      const rec = { mr, chunks: [], id: uuid(), startedAt: Date.now(), mime: this.mime || 'audio/webm' };
+      mr.ondataavailable = (e) => { if (e.data?.size) rec.chunks.push(e.data); };
+      mr.onstop = () => this.deliver(rec);
+      mr.start(5000);
+      this.cur = rec;
+    }
+
+    /** Connect any not-yet-connected tracks: local mic -> left (0), caller -> right (1). */
+    wire() {
+      if (!this.ctx || this.ctx.state === 'closed') return;
+      const add = (track, channel) => {
+        if (this.connected.has(track.id) || track.readyState !== 'live') return;
+        const stream = new MediaStream([track]);
+        if (channel === 1) {
+          // Chrome only feeds remote WebRTC audio into Web Audio while the stream is attached to a media element.
+          const a = new Audio(); a.muted = true; a.srcObject = stream; a.play().catch(() => {});
+          this.keep.push(a);
+        }
+        this.ctx.createMediaStreamSource(stream).connect(this.merger, 0, channel);
+        this.connected.add(track.id);
+      };
+      this.localTracks().forEach((t) => add(t, 0));
+      this.remote.forEach((t) => add(t, 1));
+    }
+
+    stop() {
+      if (!this.cur) return;
+      const rec = this.cur;
+      this.cur = null;
+      this.end(rec, true);
+    }
+
+    end(rec, last) {
+      rec.endedAt = Date.now();
+      try { if (rec.mr.state !== 'inactive') rec.mr.stop(); else this.deliver(rec); } catch { this.deliver(rec); }
+      if (last) {
+        // let the recorder flush its last chunk before the audio graph is torn down
+        clearInterval(this.timer); this.timer = null;
+        setTimeout(() => this.cleanup(), 1500);
+        post({ type: 'state', recording: [...sessions.values()].some((s) => s.active) });
+      }
+    }
+
+    deliver(rec) {
+      if (rec.delivered) return;
+      rec.delivered = true;
+      const durationSec = Math.round(((rec.endedAt || Date.now()) - rec.startedAt) / 1000);
+      if (durationSec < MIN_SEC || !rec.chunks.length) return;
+      diag.files++;
+      post({ type: 'recording', id: rec.id, startedAt: new Date(rec.startedAt).toISOString(), durationSec, mime: rec.mime, blob: new Blob(rec.chunks, { type: rec.mime }) });
+      report();
+    }
+
+    cleanup() {
+      clearInterval(this.timer); this.timer = null;
+      this.keep.forEach((a) => { a.srcObject = null; });
+      this.keep = [];
+      this.connected.clear();
+      try { this.ctx?.close(); } catch { /* ignore */ }
+      this.ctx = null;
+    }
+  }
+
+  const session = (pc) => {
+    let s = sessions.get(pc);
+    if (!s) { s = new Session(pc); sessions.set(pc, s); }
+    return s;
+  };
+
+  // Hook prototype methods (no constructor swap): every call connection runs these.
+  const P = PC.prototype;
+  const origSRD = P.setRemoteDescription;
+  P.setRemoteDescription = function () {
+    try { session(this); } catch { /* never break the page */ }
+    return origSRD.apply(this, arguments);
+  };
+  const origSLD = P.setLocalDescription;
+  P.setLocalDescription = function () {
+    try { session(this); } catch { /* ignore */ }
+    return origSLD.apply(this, arguments);
+  };
+  const origClose = P.close;
+  P.close = function () {
+    try { sessions.get(this)?.stop(); sessions.delete(this); } catch { /* ignore */ }
+    return origClose.apply(this, arguments);
+  };
+  window.addEventListener('pagehide', () => sessions.forEach((s) => s.stop()));
+  setTimeout(report, 3000);
+})();

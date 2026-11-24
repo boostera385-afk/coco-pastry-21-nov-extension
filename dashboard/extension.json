@@ -1,12 +1,22 @@
 {
-  "version": "0.7.2",
-  "released": "2026-11-23T12:27:02.409Z",
+  "version": "0.8.0",
+  "released": "2026-11-24T09:55:57.656Z",
   "download": "/downloads/coco-voice-extension.zip",
-  "versioned": "/downloads/coco-voice-extension-0.7.2.zip",
-  "size": 40236,
-  "sha256": "5262226eb62587a9cb0c70d127c55de2002f0a20a96d8f80405ebb23f5edb78d",
+  "versioned": "/downloads/coco-voice-extension-0.8.0.zip",
+  "size": 46620,
+  "sha256": "97848dcc82c5abd0c56e10e4297b7ed6685881cca62cc7df01dd842fafa67c5f",
   "min_chrome": "116",
   "history": [
+    {
+      "version": "0.8.0",
+      "released": "2026-11-24T09:55:57.656Z",
+      "notes": [
+        "Call recording built in: records Google Voice calls (agent + caller, 2 channels) — no Google admin setting needed; red REC badge while recording",
+        "Recordings upload safely (survive offline / closed tab / restart) and link to the call automatically",
+        "Admin can turn recording off per agent from the dashboard",
+        "Diagnostics now report call-recording health"
+      ]
+    },
     {
       "version": "0.7.2",
       "released": "2026-11-23T12:27:02.409Z",

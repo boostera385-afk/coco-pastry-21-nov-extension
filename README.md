@@ -31,6 +31,13 @@ docs/        plan, architecture, Claude analysis handoff (Ibraheem), dashboard s
    - Click the Coco icon → **Settings** → paste token → **Connect** → shows "Connected as <name>".
    - Keep a pinned `voice.google.com` tab open (Google Voice **business** account). Tracking starts the moment the token is connected — no old history.
 
+## Recordings, analytics, shifts (2026-11-24)
+
+- **Call recording (Plan B):** the extension records Google Voice browser calls itself, with no Workspace admin needed. It's on by default, with a per-agent switch in Settings, a REC badge, and 2-channel audio (agent left, caller right). See `docs/05-RECORDINGS-AND-TRANSCRIPTION.md`.
+- **Transcription:** Dashboard → Recordings. Whisper runs in the admin's browser (free, private) and produces Agent/Caller transcripts you can search.
+- **Analytics (Overview):** change vs the previous period, daily/weekly trend, call outcomes, busiest-times grid (weekday × hour), talk time, a sortable team table with multi-agent compare, click any number or bar for the exact calls/texts, and a 27-column CSV.
+- **Shifts:** per-agent days + start/end (Settings → Agents, Pakistan time). This adds a *Shift* range button, a shift report on Overview, and Analysis rules for late start, early finish, long idle gaps and shifts with no activity.
+
 ## Department rules (2026-11-23)
 
 Business Voice accounts only · every call and every text counts (per contact) · tracking starts at connect, no old history · Admin sees everything, agents see only their own numbers · Claude on hold — rule-based **Analysis** page instead (missed calls, unanswered texts, opt-outs, over-contacting, follow-ups, quiet hours, short calls; admin reviews each issue) · Pakistan time (Asia/Karachi). Details: `docs/00-MASTER-PLAN.md` §8.
@@ -60,6 +67,10 @@ Anything unclassified is still stored in `unclassified_events` with the raw payl
 node --test extension/test                      # unit: metrics, timezone, parser (incl. real Voice SMS payload)
 node tests/e2e/run.mjs                          # virtual end-to-end (94 checks), see below
 node tests/e2e/team.mjs .env dashboard/config.js   # team/permissions (13 checks)
+node tests/e2e/recording.mjs                    # call recording, transcripts, shifts, analytics (33 checks)
+node tests/e2e/transcribe.mjs                   # in-browser Whisper on a real queued recording (read-only)
+node tests/e2e/layout.mjs                       # every page fits at desktop/tablet/phone widths
+node --test tests/unit                          # transcript merge
 node scripts/reparse.mjs [--dry]                # re-run the current parser over stored raw events
 ```
 
