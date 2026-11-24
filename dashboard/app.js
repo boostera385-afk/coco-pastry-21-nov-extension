@@ -362,6 +362,7 @@ async function liveTick() {
       const y = window.scrollY;
       await route({ quiet: true });
       window.scrollTo(0, y);
+      renderUpdateBanner().catch(() => {}); // disappears by itself once the extension reports the new version
     }
     liveStamp = v;
     setLive(true);
@@ -1223,9 +1224,13 @@ async function loadAgentHealth() {
 }
 
 /** Top banner: agent -> own extension is old; admin -> some agents run an old version. */
+// Update banner: closable (stays closed for that version), refreshes with live updates, gone once updated.
+const bannerKey = () => `coco.bannerClosed.${state.ext?.version || ''}`;
 async function renderUpdateBanner() {
   const el = $('#updateBanner');
   if (!state.ext) { el.hidden = true; return; }
+  let closed = false;
+  try { closed = localStorage.getItem(bannerKey()) === '1'; } catch { /* ignore */ }
   const agents = await loadAgentHealth();
   let html = '';
   if (isMgr()) {
@@ -1233,10 +1238,14 @@ async function renderUpdateBanner() {
     if (old.length) html = `${old.length} agent${old.length > 1 ? 's run' : ' runs'} an old Coco extension (${old.map((a) => esc(a.name)).join(', ')}). Latest is <b>v${esc(state.ext.version)}</b>. <a href="#/extension">See versions →</a>`;
   } else {
     const me = agents.find((a) => a.id === state.agentId);
-    if (me && extState(me) === 'outdated') html = `Your Coco extension is <b>v${esc(me.last_health.extensionVersion)}</b> — <b>v${esc(state.ext.version)}</b> is available. <a href="#/extension">Update now →</a>`;
+    if (me && extState(me) === 'outdated') html = `Your Coco extension is <b>v${esc(me.last_health.extensionVersion)}</b> — <b>v${esc(state.ext.version)}</b> is available. Open the Coco side panel and click <b>Update now</b> (one click). <a href="#/extension">Details →</a>`;
   }
-  el.innerHTML = html;
-  el.hidden = !html;
+  el.innerHTML = html ? `<span>${html}</span><button class="banner-x" type="button" aria-label="Close" title="Close (comes back for the next version)">×</button>` : '';
+  el.hidden = !html || closed;
+  el.querySelector('.banner-x')?.addEventListener('click', () => {
+    try { localStorage.setItem(bannerKey(), '1'); } catch { /* ignore */ }
+    el.hidden = true;
+  });
 }
 
 async function renderExtension(view) {

@@ -97,8 +97,15 @@ chrome.runtime.onInstalled.addListener(async ({ reason }) => {
   }
   setup();
   const open = await chrome.tabs.query({ url: 'https://voice.google.com/*' });
-  // Already-open Voice tabs keep the OLD page hooks until they are reloaded: say so clearly.
-  await set({ needsVoiceReload: open.length > 0 });
+  // Already-open Voice tabs keep the OLD page hooks until they are reloaded.
+  // After a one-click update: reload them now, unless a call may be in progress (recording or sound playing).
+  const { selfUpdatedAt = 0, recState } = await get(['selfUpdatedAt', 'recState']);
+  if (reason === 'update' && Date.now() - selfUpdatedAt < 2 * 60e3 && !recState?.on && open.length && !open.some((t) => t.audible)) {
+    for (const t of open) await chrome.tabs.reload(t.id).catch(() => {});
+    await set({ needsVoiceReload: false, selfUpdatedAt: 0 });
+  } else {
+    await set({ needsVoiceReload: open.length > 0 });
+  }
   injectIntoOpenVoiceTabs();
 });
 chrome.runtime.onStartup.addListener(setup);

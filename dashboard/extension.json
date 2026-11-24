@@ -1,12 +1,20 @@
 {
-  "version": "0.9.0",
-  "released": "2026-11-24T11:40:25.319Z",
+  "version": "0.9.1",
+  "released": "2026-11-24T12:07:50.253Z",
   "download": "/downloads/coco-voice-extension.zip",
-  "versioned": "/downloads/coco-voice-extension-0.9.0.zip",
-  "size": 47813,
-  "sha256": "4aceca2e53b51a319f33c040f184cec248496444d805e330f0ba12b7ed05df3a",
+  "versioned": "/downloads/coco-voice-extension-0.9.1.zip",
+  "size": 51932,
+  "sha256": "c39ee970ac1eaa89afeb63b9d857d6f84f0d44a10dac0531aae8e37a4ba8b6e0",
   "min_chrome": "116",
   "history": [
+    {
+      "version": "0.9.1",
+      "released": "2026-11-24T12:07:50.253Z",
+      "notes": [
+        "One-click update: 'Update now' in the side panel downloads, checks and installs the new version itself (pick the Coco folder once)",
+        "After updating, Google Voice reloads by itself when no call is in progress"
+      ]
+    },
     {
       "version": "0.9.0",
       "released": "2026-11-24T11:40:25.319Z",

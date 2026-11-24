@@ -138,3 +138,19 @@ test('helpers', () => {
   assert.equal(s.contact, '+15550000009');
   assert.equal(s.text, 'Hello there');
 });
+
+test('one-click updater: unzips the published extension zip exactly (stored + deflate)', async () => {
+  const { unzip } = await import('../src/lib/unzip.js');
+  const fs = await import('node:fs');
+  const info = JSON.parse(fs.readFileSync(new URL('../../dashboard/extension.json', import.meta.url), 'utf8'));
+  const buf = fs.readFileSync(new URL(`../../dashboard${info.versioned}`, import.meta.url));
+  const files = await unzip(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length));
+  const names = files.map((f) => f.name.replace(/^[^/]+\//, ''));
+  for (const want of ['manifest.json', 'src/background.js', 'src/recorder.js', 'popup/popup.js', 'src/lib/selfupdate.js']) assert.ok(names.includes(want), want);
+  const manifest = JSON.parse(new TextDecoder().decode(files[names.indexOf('manifest.json')].data));
+  assert.equal(manifest.version, info.version);
+  const disk = fs.readFileSync(new URL('../src/background.js', import.meta.url));
+  if (manifest.version === JSON.parse(fs.readFileSync(new URL('../manifest.json', import.meta.url), 'utf8')).version) {
+    assert.ok(Buffer.from(files[names.indexOf('src/background.js')].data).equals(disk), 'zip content = source');
+  }
+});

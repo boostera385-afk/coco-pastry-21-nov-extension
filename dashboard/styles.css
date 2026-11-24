@@ -227,3 +227,7 @@ mark { background: var(--accent); color: #000; border-radius: 2px; }
 .hero-band .live.off { color: #8a1a1a; }
 @media (max-width: 760px) { .hero-band .live { margin-left: 0; } }
 #navLinks a[data-busy="1"]::after { content: " ●"; color: var(--yellow); }
+.update-banner:not([hidden]) { display: flex; align-items: center; gap: 12px; }
+.update-banner > span { flex: 1; }
+.banner-x { background: none; border: 0; color: var(--text); font-size: 22px; line-height: 1; padding: 2px 8px; border-radius: 6px; cursor: pointer; }
+.banner-x:hover, .banner-x:focus-visible { background: #3a2c00; outline: none; }

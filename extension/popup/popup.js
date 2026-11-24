@@ -1,5 +1,6 @@
 import { summarize, dayKey, addDays, DEFAULT_TZ } from '../src/lib/metrics.js';
 import { DASHBOARD_URL } from '../src/config.js';
+import { updateNow, canSelfUpdate } from '../src/lib/selfupdate.js';
 
 const $ = (id) => document.getElementById(id);
 let range = 'today';
@@ -85,6 +86,20 @@ $('sync').addEventListener('click', async () => {
 $('openVoice').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'open-voice' }));
 $('goVoice').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'open-voice' }));
 $('updateHow').addEventListener('click', () => chrome.tabs.create({ url: `${DASHBOARD_URL}/#/extension` }));
+// One click: download the new version into Coco's own folder and restart (first time: pick the folder once)
+$('updateNow').hidden = !canSelfUpdate();
+$('updateNow').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  const say = (t) => { $('updateMsg').textContent = t; };
+  try {
+    const v = await updateNow(say);
+    say(`Updated to v${v} — restarting…`);
+  } catch (err) {
+    btn.disabled = false;
+    say(err?.name === 'AbortError' ? 'Cancelled — click Update now again when ready.' : `Couldn't update: ${err.message || err}. Use Manual steps instead.`);
+  }
+});
 $('setup').addEventListener('click', () => chrome.runtime.openOptionsPage());
 $('reloadVoice').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'reload-voice' }));
 $('openDash').addEventListener('click', () => chrome.tabs.create({ url: DASHBOARD_URL }));
