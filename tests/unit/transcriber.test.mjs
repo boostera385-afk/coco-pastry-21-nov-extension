@@ -27,6 +27,8 @@ test('typical Whisper mistakes on silence / noise are removed', () => {
     { start: 10, end: 13, text: 'Thank you so much for calling.', no_speech_prob: 0.02, avg_logprob: -0.3 }, // real
   ]);
   assert.deepEqual(out.map((s) => s.text), ['Hello, is this the front desk?', 'Thank you so much for calling.']);
+  assert.equal(cleanSegments([{ start: 0, end: 3, text: 'No, sorry. you' }])[0].text, 'No, sorry.');
+  assert.equal(cleanSegments([{ start: 0, end: 3, text: 'I will call you' }])[0].text, 'I will call you');
 });
 
 test('a short real talk is a person; a greeting is voicemail', () => {

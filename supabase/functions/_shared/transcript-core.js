@@ -17,7 +17,8 @@ const NOISE = /^[\s[(♪*-]*(blank_audio|music|silence|inaudible|no speech|sound
 export function cleanSegments(segs) {
   const out = [];
   for (const s of segs || []) {
-    const text = String(s.text || '').replace(/\s+/g, ' ').trim();
+    // Whisper often tacks a stray "you" / "Thank you." onto the end of a clip after a pause
+    const text = String(s.text || '').replace(/\s+/g, ' ').trim().replace(/([.!?,])\s+(you|thank you)[.!?]?$/i, '$1').trim();
     if (!text || NOISE.test(text)) continue;
     const dur = Math.max(0, Number(s.end ?? 0) - Number(s.start ?? 0));
     const nsp = Number(s.no_speech_prob ?? 0);
