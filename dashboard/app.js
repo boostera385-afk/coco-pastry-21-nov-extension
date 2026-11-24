@@ -1058,7 +1058,7 @@ function transcriptHtml(it) {
   return '';
 }
 const answeredBadge = (it) => (it.answered_by === 'human' ? ' · <span class="badge good" title="The transcript shows a real person talking with the agent">talked to a person</span>'
-  : it.answered_by === 'voicemail' ? ' · <span class="badge" title="The transcript shows a voicemail greeting">reached voicemail</span>' : '');
+  : it.answered_by === 'voicemail' ? ' · <span class="badge" title="The transcript shows a voicemail greeting or a phone menu">voicemail / phone menu</span>' : '');
 
 /** Ask for a fresh transcript with the best model: server (Groq) right away, or the browser backup worker. */
 async function requestTranscript(kind, id, btn) {

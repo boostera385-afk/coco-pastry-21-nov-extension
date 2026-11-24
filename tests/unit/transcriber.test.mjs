@@ -41,6 +41,9 @@ test('a short real talk is a person; a greeting is voicemail', () => {
   assert.equal(detectAnsweredBy(vm), 'voicemail');
   assert.equal(detectAnsweredBy([{ text: 'The person you are calling is not available. Please leave a message.' }], { labelled: false }), 'voicemail');
   assert.equal(detectAnsweredBy(mergeTurns([[{ start: 0, end: 1, text: 'Hello?' }], []], ['Agent', 'Caller'])), null);
+  const mixed = ['Good morning, this is Duo Housing DC.', 'We want to test Coco extensions.', 'Excuse me?', 'We want to test Coco extensions on US numbers.', "You're trying to extend your reservation? I'm very confused.", 'What are you calling about?'].map((text) => ({ text }));
+  assert.equal(detectAnsweredBy(mixed, { labelled: false }), 'human');
+  assert.equal(detectAnsweredBy([{ text: 'Thank you for calling Freehand Miami.' }, { text: 'To speak to us about a group booking, press 1.' }], { labelled: false }), 'voicemail');
 });
 
 test('voice activity detection finds speech and its start time; silence gives nothing', () => {

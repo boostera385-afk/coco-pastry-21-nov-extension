@@ -60,7 +60,12 @@ const words = (s) => (String(s).match(/[a-z0-9']+/gi) || []).length;
  */
 export function detectAnsweredBy(turns, { labelled = true } = {}) {
   if (!turns?.length) return null;
-  if (!labelled) return VOICEMAIL.test(turns.map((t) => t.text).join(' ')) ? 'voicemail' : null;
+  if (!labelled) {
+    // one mixed track (older recordings, Google's own): greeting / phone menu -> voicemail; a real exchange -> person
+    const all = turns.map((t) => t.text).join(' ');
+    if (VOICEMAIL.test(all)) return 'voicemail';
+    return turns.length >= 4 && words(all) >= 15 && /\?/.test(all) ? 'human' : null;
+  }
   const caller = turns.filter((t) => t.who === 'Caller');
   const agent = turns.filter((t) => t.who === 'Agent');
   const callerText = caller.map((t) => t.text).join(' ');
