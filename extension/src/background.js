@@ -26,19 +26,39 @@ async function viciPatterns() {
 const viciTabs = async () => chrome.tabs.query({ url: await viciPatterns() }).catch(() => []);
 /** A Vici server outside callengine.org (set in Settings): its permission was granted there; register the scripts. */
 async function ensureViciScripts() {
-  const ids = ['coco-vici-main', 'coco-vici-bridge'];
+  const ids = ['coco-vici-main', 'coco-vici-bridge', 'coco-vici-phone-rec', 'coco-vici-phone-bridge'];
   try {
     const have = (await chrome.scripting.getRegisteredContentScripts({ ids })).map((x) => x.id);
     if (have.length) await chrome.scripting.unregisterContentScripts({ ids: have });
-    const { viciUrl } = await get('viciUrl');
+    const { viciUrl, viciPhoneHosts = [] } = await get(['viciUrl', 'viciPhoneHosts']);
+    const reg = [];
     const p = originPattern(viciUrl);
-    if (!p || isBuiltInVici(p) || !(await chrome.permissions.contains({ origins: [p] }))) return false;
-    await chrome.scripting.registerContentScripts([
-      { id: ids[0], matches: [p], js: ['src/vici/page.js', 'src/recorder.js'], world: 'MAIN', runAt: 'document_start', allFrames: true, persistAcrossSessions: true },
-      { id: ids[1], matches: [p], js: ['src/vici/bridge.js'], runAt: 'document_start', allFrames: true, persistAcrossSessions: true },
-    ]);
-    return true;
+    if (p && !isBuiltInVici(p) && (await chrome.permissions.contains({ origins: [p] }))) {
+      reg.push({ id: ids[0], matches: [p], js: ['src/vici/page.js', 'src/recorder.js'], world: 'MAIN', runAt: 'document_start', allFrames: true, persistAcrossSessions: true },
+        { id: ids[1], matches: [p], js: ['src/vici/bridge.js'], runAt: 'document_start', allFrames: true, persistAcrossSessions: true });
+    }
+    // the browser phone frame on its own address (allowed once by the agent): recorder + bridge only
+    const phones = [];
+    for (const h of viciPhoneHosts) if (!isBuiltInVici(h) && h !== p && (await chrome.permissions.contains({ origins: [h] }))) phones.push(h);
+    if (phones.length) {
+      reg.push({ id: ids[2], matches: phones, js: ['src/recorder.js'], world: 'MAIN', runAt: 'document_start', allFrames: true, persistAcrossSessions: true },
+        { id: ids[3], matches: phones, js: ['src/vici/bridge.js'], runAt: 'document_start', allFrames: true, persistAcrossSessions: true });
+    }
+    if (reg.length) await chrome.scripting.registerContentScripts(reg);
+    return reg.length > 0;
   } catch { return false; }
+}
+/** Frame addresses on the Vici screen that Coco can't run in yet (candidates for the browser phone). */
+async function viciPhoneCandidates(diag) {
+  const covered = await viciPatterns();
+  const out = [];
+  for (const f of diag?.frames || []) {
+    const pat = originPattern(f);
+    if (!pat || out.includes(pat) || isBuiltInVici(pat) || covered.includes(pat)) continue;
+    if (await chrome.permissions.contains({ origins: [pat] }).catch(() => false)) continue;
+    out.push(pat);
+  }
+  return out.slice(0, 5);
 }
 
 const get = (keys) => chrome.storage.local.get(keys);
@@ -216,6 +236,7 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
       case 'vici-call-state':
         // tell every frame of that tab (the browser phone may be an iframe) to start/stop this call's recording
         if (sender.tab?.id >= 0) chrome.tabs.sendMessage(sender.tab.id, { type: 'vici-rec-gate', on: msg.on, uid: msg.uid }).catch(() => {});
+        await set({ viciGate: { on: !!msg.on, uid: msg.uid || null, tab: sender.tab?.id ?? null, at: Date.now() } });
         break;
       case 'vici-dial': return reply(await viciDial(msg.phone));
       case 'vici-sample': await onViciSample(msg.sample); break;
@@ -232,8 +253,13 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
       case 'vici-url-changed': await ensureViciScripts(); await injectIntoOpenViciTabs(); await refreshStatus(); break;
       case 'vici-rec-diag': {
         const { viciRecDiag = {} } = await get('viciRecDiag');
-        viciRecDiag[String(sender.frameId ?? 0)] = { ...msg.diag, url: (sender.url || '').split('?')[0].slice(0, 80), at: Date.now() };
+        const fk = String(sender.frameId ?? 0);
+        const isNew = !viciRecDiag[fk] || Date.now() - viciRecDiag[fk].at > 12 * 3600e3;
+        viciRecDiag[fk] = { ...msg.diag, url: (sender.url || '').split('?')[0].slice(0, 80), at: Date.now() };
         await set({ viciRecDiag });
+        // a frame that started late (phone frame loaded or allowed mid-call) gets the live-call state
+        const { viciGate } = await get('viciGate');
+        if (isNew && viciGate?.on && sender.tab?.id === viciGate.tab) chrome.tabs.sendMessage(sender.tab.id, { type: 'vici-rec-gate', on: true, uid: viciGate.uid }, { frameId: sender.frameId }).catch(() => {});
         break;
       }
       case 'vici-page': await set({ viciSeenAt: Date.now(), viciHeartbeatPending: true }); await refreshStatus(); break;
@@ -744,7 +770,8 @@ async function viciState(tabs) {
   const d = st.viciDiag;
   const fresh = d && Date.now() - (d.at || 0) < 75e3;
   const phone = Object.values(st.viciRecDiag || {}).some((x) => x.pcs > 0 && Date.now() - (x.at || 0) < 12 * 3600e3);
-  const base = { phone, user: (fresh && d.user) || st.viciUser || null, syncError: st.viciSyncError || null, syncAt: st.viciSyncAt || null };
+  const needPhone = !phone && fresh ? await viciPhoneCandidates(d) : [];
+  const base = { phone, needPhone, user: (fresh && d.user) || st.viciUser || null, syncError: st.viciSyncError || null, syncAt: st.viciSyncAt || null };
   if (!tabs.length) return { ...base, state: 'closed', level: 'warn', text: 'Vici screen is not open' };
   if (!fresh) {
     if (Date.now() - lastHeal > 60e3) { lastHeal = Date.now(); injectIntoOpenViciTabs(); }
@@ -784,7 +811,10 @@ async function runViciTest() {
       const known = viciDiag.globals && viciDiag.globals.VD_live_customer_call !== 'missing';
       add(known || !viciDiag.user, 'Call detection ready', 'This Vici screen is non-standard — make one test call; your admin will see the details', true);
       const phone = Object.values(viciRecDiag || {}).some((x) => x.pcs > 0);
-      add(phone, 'Browser phone detected (calls will be recorded)', 'Reload the Vici tab once between calls and allow the microphone, so Coco can see the phone', true);
+      const need = phone ? [] : await viciPhoneCandidates(viciDiag);
+      add(phone, 'Browser phone detected (calls will be recorded)', need.length
+        ? `The phone loads from ${need.map((x) => x.replace('https://', '').replace('/*', '')).join(', ')} — click "Allow recording the phone" in the Vici card, then log out of Vici and log in again once`
+        : 'Log out of Vici and log in again once (between calls) and allow the microphone, so Coco sees the phone. Still missing? Your phone may be a desktop app — Coco can only record the browser phone', true);
     }
   }
   add(st.recordCalls !== false, 'Call recording on', 'Your admin turned recording off for you (calls are still counted)', true);

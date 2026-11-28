@@ -851,6 +851,38 @@ async function renderContacts(view) {
 
 // ---------- Vici Dialer: its own numbers, never mixed with Google Voice ----------
 const DIAL_TYPE = { manual: 'manual dial', auto: 'auto dial', inbound: 'inbound', unknown: '—' };
+// Standard Vici statuses -> [name, tone, what it means]. Campaign statuses use the name the Vici screen shows.
+const VICI_STATUS = {
+  SALE: ['Sale', 'good', 'The agent closed a sale.'], XFER: ['Transferred', 'good', 'The call was transferred (e.g. to a closer).'],
+  CALLBK: ['Call back', 'good', 'The customer asked to be called back; Vici schedules it.'], CBHOLD: ['Call back (on hold)', '', 'A scheduled call back waiting for its time.'],
+  NI: ['Not interested', '', 'Reached the customer, who was not interested.'], DEC: ['Declined sale', '', 'Reached the customer, who declined.'],
+  NP: ['No pitch', '', 'Reached the customer but no pitch was made.'],
+  N: ['No answer', 'medium', 'The phone rang out — nobody picked up.'], NA: ['No answer (auto)', 'medium', 'Auto dial rang out — nobody picked up.'],
+  B: ['Busy', 'medium', 'The line was busy.'], AB: ['Busy (auto)', 'medium', 'Auto dial got a busy signal.'],
+  A: ['Answering machine', 'medium', 'Voicemail / answering machine picked up.'], AA: ['Answering machine (auto)', 'medium', 'Vici detected an answering machine.'],
+  AM: ['Machine — message left', 'medium', 'Answering machine; a message was left.'], AL: ['Machine — message played', 'medium', 'Answering machine; the recorded message played.'],
+  AFAX: ['Fax machine', 'high', 'A fax machine answered.'],
+  DC: ['Disconnected number', 'high', 'The number is not in service ("the number you have dialed…").'], ADC: ['Disconnected number (auto)', 'high', 'Vici detected a disconnected number.'],
+  DNC: ['Do not call', 'high', 'Customer asked not to be called. Coco blocks dialing it again.'], DNCL: ['Do not call (list)', 'high', 'Number is on the Do Not Call list.'],
+  DNCC: ['Do not call (campaign)', 'high', 'Number is on the campaign Do Not Call list.'],
+  DROP: ['Dropped (no agent)', 'high', 'The customer answered but no agent was free.'], PDROP: ['Dropped before routing', 'high', 'The call dropped before it reached an agent.'],
+  XDROP: ['Dropped in transfer', 'high', 'The call dropped during a transfer.'], TIMEOT: ['Queue timeout', 'high', 'The caller waited too long in the queue.'],
+  AFTHRS: ['After hours', '', 'Inbound call outside open hours.'], ERI: ['Agent error', 'high', 'The agent screen had an error on this call.'],
+  INCALL: ['In call', '', 'The lead is on a call right now.'], QUEUE: ['Queued', '', 'Lead waiting to be called.'], NEW: ['New lead', '', 'Not called yet.'],
+  PU: ['Picked up', '', 'The call was picked up.'], PM: ['Message played', '', 'A recorded message was played.'],
+};
+const viciStatus = (code, name) => {
+  const c = String(code || '').toUpperCase();
+  const k = VICI_STATUS[c];
+  return { code: c, name: name || k?.[0] || c, tone: k?.[1] ?? '', hint: k?.[2] || (name ? 'Campaign status set by the agent.' : 'Status set by the agent in Vici.') };
+};
+function viciStatusBadge(r) {
+  if (!r.disposition) return r.ended_at || r.talk_sec ? '<span class="badge" title="No status was chosen on the Vici screen yet">no status yet</span>' : '';
+  const st = viciStatus(r.disposition, r.disposition_name);
+  const tip = [`${st.name} (${st.code}) — ${st.hint}`, `Set by ${r.vici_user ? `Vici user ${r.vici_user}` : 'the agent'}${r.ended_at ? ` after a ${dur(r.talk_sec)} call ending ${fmtTime(r.ended_at)}` : ''}`,
+    r.campaign ? `Campaign ${r.campaign}${r.lead_id ? ` · lead ${r.lead_id}` : ''}` : '', `${DIAL_TYPE[r.dial_type] || r.dial_type || ''}`].filter(Boolean).join('\n');
+  return `<span class="badge ${st.tone}" title="${esc(tip)}" tabindex="0">${esc(st.name)}</span> <span class="small muted">${esc(st.code)}</span>`;
+}
 
 // Click-to-dial: the Coco extension in THIS browser dials on its Vici agent screen (no Vici password in the dashboard).
 const ext = { present: false, connected: false, viciOpen: false, version: null };
@@ -893,6 +925,7 @@ const VICI_BARS = {
   tip: (d, c, conv) => `${c} Vici calls (${d.connected} connected, ${d.manual} manual, ${d.auto} auto), ${conv} conversations, ${Math.round(Number(d.talk_sec) / 60)} min talk`,
   legend: ['Vici calls', 'Conversations'],
 };
+const viciNames = {}; // campaign status code -> name the Vici screen shows (from the calls list)
 let viciPreset = null; // number/name to search when opening the Vici page (from transcript search)
 function viciHeatCard(heat) {
   const grid = Array.from({ length: 7 }, () => Array(24).fill(null));
@@ -914,6 +947,7 @@ async function renderVici(view) {
   const [team, dispos, trend, heat] = await Promise.all([rpc('vici_summary', args), rpc('vici_dispositions', args),
     rpc('vici_timeline', { p_from_ts: i0, p_to_ts: i1, p_agent: agent, p_bucket: bucketOf() }).catch(() => []),
     rpc('vici_heatmap', args).catch(() => [])]);
+  const dispoBadges = () => dispos.map((d) => { const st = viciStatus(d.disposition === '(none)' ? '' : d.disposition, viciNames[d.disposition]); return `<span class="badge ${st.tone}" title="${esc(`${st.name} (${st.code || 'none'}) — ${d.disposition === '(none)' ? 'no status chosen yet' : st.hint}\n${mins(d.talk_sec / 60)} total call time`)}" tabindex="0">${esc(d.disposition === '(none)' ? 'No status yet' : st.name)} · ${n(d.calls)}</span>`; }).join('') || '<span class="small muted">None in this period</span>';
   const t = ['calls', 'manual', 'auto', 'inbound', 'connected', 'conversations', 'voicemails', 'talk_sec', 'recorded']
     .reduce((o, k) => ({ ...o, [k]: team.reduce((s, r) => s + Number(r[k] || 0), 0) }), {});
   view.innerHTML = `
@@ -947,22 +981,24 @@ async function renderVici(view) {
         <td class="num">${n(r.conversations)}</td><td class="num">${mins(r.talk_sec / 60)}</td>
         <td class="small">${r.first_call_at ? `${fmtTime(r.first_call_at)} – ${fmtTime(r.last_call_at)}` : '—'}</td><td class="small">${ago(r.vici_heartbeat_at)}</td></tr>`).join('')
         || '<tr><td colspan="11" class="empty">No Vici activity yet — agents open the Vici agent screen in Chrome with the Coco extension connected.</td></tr>'}</tbody></table></div></div>
-    <div class="card"><h3>Dispositions</h3><div class="row" style="flex-wrap:wrap;gap:8px">${dispos.map((d) => `<span class="badge" title="${mins(d.talk_sec / 60)} talk">${esc(d.disposition)} · ${n(d.calls)}</span>`).join('') || '<span class="small muted">None in this period</span>'}</div></div>
+    <div class="card"><h3>Statuses</h3><div class="row" style="flex-wrap:wrap;gap:8px" id="vdispos">${dispoBadges()}</div></div>
     <div class="card"><h3>Calls</h3><div class="table-wrap" id="vtable"><div class="empty">Loading…</div></div></div>`;
   let rows = [];
   const load = async () => {
     rows = await rpc('vici_calls_list', { ...args, p_search: $('#vsearch').value.trim() || null, p_limit: 500 });
     const paths = [...new Set(rows.map((r) => r.recording_path).filter(Boolean))];
     const signed = paths.length ? Object.fromEntries((((await sb.storage.from('recordings').createSignedUrls(paths, 3600)).data) || []).filter((x) => x.signedUrl).map((x) => [x.path, x.signedUrl])) : {};
+    rows.forEach((r) => { if (r.disposition && r.disposition_name) viciNames[r.disposition] = r.disposition_name; });
+    $('#vdispos').innerHTML = dispoBadges();
     const perNumber = rows.reduce((m, r) => (r.phone ? m.set(r.phone, (m.get(r.phone) || 0) + 1) : m), new Map());
     const q = $('#vsearch').value.trim();
     $('#vtable').innerHTML = `${q ? `<p class="small">Showing calls matching <b>${esc(q)}</b> · <a href="#" id="vclear">show all</a></p>` : ''}<table>
-      <thead><tr><th>When</th><th>Agent</th><th>Contact</th><th>Type</th><th>Status</th><th class="num">Talk</th><th>Recording &amp; transcript</th></tr></thead>
+      <thead><tr><th>When</th><th>Agent</th><th>Contact</th><th>Type</th><th>Status <span class="small muted" title="Hover a status for what it means">ⓘ</span></th><th class="num" title="From dial to hang-up (manual dials include ringing)">Length</th><th>Recording &amp; transcript</th></tr></thead>
       <tbody>${rows.map((r) => `<tr>
         <td style="white-space:nowrap">${fmtTime(r.started_at)}</td><td>${esc(r.agent_name)}</td>
         <td><b>${esc(r.contact_name || r.phone || '—')}</b>${r.contact_name && r.phone ? `<div class="small muted">${esc(r.phone)}</div>` : ''}${perNumber.get(r.phone) > 1 && q !== r.phone ? ` <a href="#" class="small" data-vphone="${esc(r.phone)}" title="Every Vici call with this number">${perNumber.get(r.phone)} calls</a>` : r.phone && q !== r.phone ? ` <a href="#" class="small" data-vphone="${esc(r.phone)}" title="Every Vici call with this number">history</a>` : ''}${US_PHONE(r.phone) && r.disposition?.toUpperCase() !== 'DNC' ? ` <button class="btn dark" data-dial="${esc(r.phone)}">Call back</button>` : ''}${r.campaign ? `<div class="small muted">${esc(r.campaign)}${r.lead_id ? ` · lead ${esc(r.lead_id)}` : ''}</div>` : ''}</td>
         <td class="small">${esc(DIAL_TYPE[r.dial_type] || r.dial_type || '—')}</td>
-        <td>${r.disposition ? `<span class="badge">${esc(r.disposition)}</span>` : ''}${r.conversation ? ' <span class="badge good">conversation</span>' : ''}${answeredBadge(r)}</td>
+        <td>${viciStatusBadge(r)}${r.conversation ? ' <span class="badge good">conversation</span>' : ''}${answeredBadge(r)}</td>
         <td class="num">${dur(r.talk_sec)}</td>
         <td style="min-width:260px">${signed[r.recording_path] ? `<audio class="rec" controls preload="none" src="${esc(signed[r.recording_path])}"></audio>` : ''}
           ${r.transcript ? `<details class="tx"><summary class="small">Transcript · ${esc(TX_SOURCE[r.transcript_source] || r.transcript_source || 'Coco')}</summary><div class="tx-body">${esc(r.transcript)}</div></details>` : r.recording_path ? '<span class="small muted">Transcript on its way…</span>' : ''}

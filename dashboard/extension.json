@@ -1,12 +1,22 @@
 {
-  "version": "0.12.0",
-  "released": "2026-11-28T06:57:40.473Z",
+  "version": "0.13.0",
+  "released": "2026-11-28T09:14:43.406Z",
   "download": "/downloads/coco-voice-extension.zip",
-  "versioned": "/downloads/coco-voice-extension-0.12.0.zip",
-  "size": 65919,
-  "sha256": "e99c8e5c228f7df8f8e75c77d4d761b0b6c25be73991b776f587ed75b87dc564",
+  "versioned": "/downloads/coco-voice-extension-0.13.0.zip",
+  "size": 67882,
+  "sha256": "609f0d70207db412d5a63897ddfd4d76cfc9d6e1f94d8ca5d19d7b3a71d4d278",
   "min_chrome": "116",
   "history": [
+    {
+      "version": "0.13.0",
+      "released": "2026-11-28T09:14:43.406Z",
+      "notes": [
+        "Vici calls are now recorded when the browser phone loads from its own address: the side panel shows 'Allow recording the phone' (one click), then log out of Vici and in again once",
+        "Picks up a browser phone that was already connected before Coco started",
+        "Vici status names (e.g. No Answer, Disconnected Number) captured from the Vici screen",
+        "Every password-like field is removed from Vici diagnostics"
+      ]
+    },
     {
       "version": "0.12.0",
       "released": "2026-11-28T06:57:40.473Z",

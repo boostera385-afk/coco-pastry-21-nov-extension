@@ -9,7 +9,8 @@
   window.__cocoVici = 1;
   const top = window === window.top;
   const post = (msg) => window.postMessage({ source: 'coco-vici', ...msg }, window.location.origin);
-  const SECRET = /^(pass|phone_pass|password|pw|vd_pass|sip_pass|api_pass)$/i;
+  // any field named like a password (pass, orig_pass, phone_pass, VD_pass, pwd, secret, token…) never leaves this page
+  const SECRET = /pass|pwd|secret|token/i;
 
   const params = (s) => { try { return new URLSearchParams(typeof s === 'string' ? s : ''); } catch { return new URLSearchParams(); } };
   const clean = (u, body) => {
@@ -17,7 +18,32 @@
     for (const src of [params(String(u).split('?')[1] || ''), params(body)]) for (const [k, v] of src) if (!SECRET.test(k)) p.set(k, v);
     return p;
   };
-  const redact = (t) => String(t ?? '').replace(/\d{7,}/g, (d) => `#${d.length}#`).slice(0, 600);
+  const redact = (t) => String(t ?? '').replace(/([\w-]*(?:pass|pwd|secret|token)[\w-]*)=[^&\s"'<]*/gi, '$1=***')
+    .replace(/\d{7,}/g, (d) => `#${d.length}#`).slice(0, 600);
+
+  /** Status names the screen itself shows (system + campaign statuses), e.g. N -> "No Answer". */
+  const list = (v) => (Array.isArray(v) ? v.map(String) : typeof v === 'string' ? v.split(/[|,]/) : []);
+  const dispoName = (code) => {
+    for (const [a, b] of [['VARstatuses', 'VARstatusnames'], ['VARCBstatuses', 'VARCBstatusnames'], ['statuses', 'statusnames']]) {
+      const c = list(g(a)); const nm = list(g(b));
+      const i = c.findIndex((x) => x.trim().toUpperCase() === code.toUpperCase());
+      if (i >= 0 && nm[i] && nm[i].trim()) return nm[i].trim().slice(0, 60);
+    }
+    return null;
+  };
+  /** Where the screen's frames load from (address + path only): finds the browser phone frame. */
+  const frames = () => {
+    const out = new Set();
+    const walk = (doc, depth) => {
+      if (!doc || depth > 3) return;
+      for (const f of doc.querySelectorAll?.('iframe, frame') || []) {
+        try { const u = new URL(f.src || f.getAttribute('src') || '', doc.baseURI); if (/^https?:$/.test(u.protocol)) out.add(`${u.origin}${u.pathname}`.slice(0, 120)); } catch { /* ignore */ }
+        try { walk(f.contentDocument, depth + 1); } catch { /* cross-origin */ }
+      }
+    };
+    try { walk(document, 0); } catch { /* ignore */ }
+    return [...out].slice(0, 20);
+  };
 
   // ---------- call state ----------
   const S = { live: false, call: null, last: null, xhrLive: null, dialed: null, actions: {}, globals: null };
@@ -125,7 +151,7 @@
     } else if (action === 'updateDISPO') {
       const dispo = (p.get('dispo_choice') || p.get('status') || '').trim().slice(0, 30);
       const c = S.call || S.last;
-      if (dispo && c && Date.now() - (c.endedAt || c.startedAt) < 30 * 60e3) { c.disposition = dispo; emit('dispo', c); }
+      if (dispo && c && Date.now() - (c.endedAt || c.startedAt) < 30 * 60e3) { c.disposition = dispo; emit('dispo', c, { disposition_name: dispoName(dispo) }); }
     }
   }
 
@@ -200,7 +226,7 @@
   // diagnostics for the dashboard (counts + which screen variables exist; no lead data)
   // Sent right away, whenever login / call state changes, on request (ping) and every 30 s as a heartbeat.
   const diag = () => post({ type: 'diag', diag: { actions: S.actions, globals: S.globals, live: S.live, user: viciUser(),
-    loginForm: !viciUser() && !!document.querySelector?.('input[name="VD_login"], input[name="user"], input[name="phone_login"]'),
+    loginForm: !viciUser() && !!document.querySelector?.('input[name="VD_login"], input[name="user"], input[name="phone_login"]'), frames: frames(),
     page: location.pathname.slice(0, 60), title: String(document.title || '').slice(0, 60) } });
   if (top) {
     let sig = '';

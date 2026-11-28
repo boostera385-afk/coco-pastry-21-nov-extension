@@ -232,6 +232,16 @@
     try { session(this); } catch { /* ignore */ }
     return origSLD.apply(this, arguments);
   };
+  // A phone that connected before Coco arrived (Vici keeps one connection for the whole login): adopt it the first
+  // time the page touches it (mute, stats, hold…). Observing only — the original method always runs unchanged.
+  for (const m of ['getSenders', 'getReceivers', 'getTransceivers', 'getStats', 'addIceCandidate', 'getLocalStreams', 'getRemoteStreams']) {
+    const orig = P[m];
+    if (typeof orig !== 'function') continue;
+    P[m] = function () {
+      try { if (!sessions.has(this) && this.connectionState !== 'closed') { session(this).maybeStart(); } } catch { /* ignore */ }
+      return orig.apply(this, arguments);
+    };
+  }
   const origClose = P.close;
   P.close = function () {
     try { sessions.get(this)?.stop(); sessions.delete(this); } catch { /* ignore */ }

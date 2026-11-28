@@ -28,8 +28,13 @@ function renderVici(st) {
   $('viciDot').className = `dot ${DOT[v.level] ?? ''}`;
   $('viciState').textContent = v.text;
   const [label, action, help] = VICI_FIX[v.state] || VICI_FIX.closed;
-  const phone = v.state === 'ready' && !v.phone ? ' Browser phone not seen yet — click Test Vici.' : '';
+  const need = !v.phone && (v.needPhone || []).length ? v.needPhone : [];
+  const phone = need.length
+    ? ` Calls are NOT recorded yet: your browser phone loads from ${need.map((x) => x.replace('https://', '').replace('/*', '')).join(', ')}. Click "Allow recording the phone" once.`
+    : (v.state === 'ready' || v.state === 'oncall') && !v.phone ? ' Browser phone not seen yet — click Test Vici.' : '';
   $('viciHelp').textContent = help + phone;
+  $('viciPhone').hidden = !need.length;
+  $('viciPhone').dataset.hosts = JSON.stringify(need);
   $('viciFix').hidden = !label || label === 'Test Vici';
   if (label) { $('viciFix').textContent = label; $('viciFix').dataset.action = action; }
   const vs = st.viciSummary;
@@ -126,6 +131,19 @@ $('sync').addEventListener('click', async () => {
 });
 $('openVoice').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'open-voice' }));
 $('viciFix').addEventListener('click', (e) => chrome.runtime.sendMessage({ type: e.currentTarget.dataset.action || 'open-vici' }));
+$('viciPhone').addEventListener('click', async (e) => {
+  const b = e.currentTarget;
+  const hosts = JSON.parse(b.dataset.hosts || '[]');
+  if (!hosts.length) return;
+  // must run here (a click in the panel): Chrome asks the agent to allow Coco on the phone's address
+  const ok = await chrome.permissions.request({ origins: hosts }).catch(() => false);
+  if (!ok) { $('viciHelp').textContent = 'Not allowed — calls stay unrecorded. Click "Allow recording the phone" again and choose Allow.'; return; }
+  const { viciPhoneHosts = [] } = await chrome.storage.local.get('viciPhoneHosts');
+  await chrome.storage.local.set({ viciPhoneHosts: [...new Set([...viciPhoneHosts, ...hosts])] });
+  await chrome.runtime.sendMessage({ type: 'vici-url-changed' });
+  b.hidden = true;
+  $('viciHelp').textContent = 'Allowed. Between calls, log out of Vici and log in again once — then click Test Vici: "Browser phone detected" should be ✅.';
+});
 $('viciTest').addEventListener('click', async (e) => {
   const b = e.currentTarget; b.disabled = true; b.textContent = 'Testing…';
   try { await chrome.runtime.sendMessage({ type: 'vici-test' }); } finally { b.disabled = false; b.textContent = 'Test Vici'; }

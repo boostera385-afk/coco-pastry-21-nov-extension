@@ -62,8 +62,9 @@ const rpc = async (jwt, fn, body) => {
 // connects at login and stays up. __call(sec) puts a customer on the line for sec seconds, then picks a disposition.
 const PAGE = `<!doctype html><html><head><title>mock vici</title></head><body><h1>Mock Vici agent screen</h1>
 <form name="vicidial_form"><input name="lead_id"><input name="uniqueid"><input name="phone_code"><input name="phone_number">
-<input name="first_name"><input name="last_name"></form><script>
+<input name="first_name"><input name="last_name"></form><iframe src="https://phone.example.org/webphone/index.php?user=8001&pass=X" width="1" height="1"></iframe><script>
   var VD_live_customer_call = 0, auto_dial_level = 1, campaign = 'E2ECAMP', inOUT = 'OUT', VDCL_group_id = '';
+  var VARstatuses = new Array('N', 'SALE', 'DC'), VARstatusnames = new Array('No Answer', 'Sale Made', 'Disconnected Number');
   window.__login = () => { window.user = '8001'; window.pass = 'AGENTPW'; };
   async function phone() {
     const f = document.createElement('iframe'); f.srcdoc = '<p>caller</p>'; document.body.appendChild(f);
@@ -91,7 +92,7 @@ const PAGE = `<!doctype html><html><head><title>mock vici</title></head><body><h
     await new Promise((r) => setTimeout(r, sec * 1000));
     VD_live_customer_call = 0;
     await new Promise((r) => setTimeout(r, 1500));
-    await ajax('ACTION=updateDISPO&user=8001&pass=TOPSECRET&dispo_choice=SALE&lead_id=9001');
+    await ajax('ACTION=updateDISPO&user=8001&pass=TOPSECRET&orig_pass=TOPSECRET&dispo_choice=SALE&lead_id=9001');
     document.title = 'call done';
   };
   phone();
@@ -184,6 +185,9 @@ async function browserPart(token, agentId, adminJwt) {
   check('lead details captured (phone, name, lead, campaign, auto dial, user)', row && row.phone === '+13075550142' && row.contact_name === 'Vici Lead'
     && row.lead_id === '9001' && row.campaign === 'E2ECAMP' && row.dial_type === 'auto' && row.vici_user === '8001', JSON.stringify(row));
   check('disposition captured (SALE)', row?.disposition === 'SALE');
+  check('status name from the Vici screen captured ("Sale Made")', row?.payload?.disposition_name === 'Sale Made', JSON.stringify(row?.payload));
+  const fr = (await store()).viciDiag?.frames || [];
+  check('screen frames reported (finds a phone frame on another address, no query string)', fr.includes('https://phone.example.org/webphone/index.php') && !fr.some((x) => /pass=/.test(x)), JSON.stringify(fr));
   check('talk time ≈ call length (5–8 s)', row && row.talk_sec >= 5 && row.talk_sec <= 8, `talk ${row?.talk_sec}`);
   const [gvc] = await sql(`select (select count(*) from calls where agent_id='${agentId}')::int calls, (select count(*) from messages where agent_id='${agentId}')::int msgs,
     (select count(*) from v_activity where agent_id='${agentId}')::int act`);
