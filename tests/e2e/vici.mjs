@@ -137,7 +137,7 @@ async function browserPart(token, agentId, adminJwt) {
   });
   const { targetId: optId } = await cdp.send('Target.createTarget', { url: `chrome-extension://${extId}/options/options.html` });
   const optS = await cdp.attach(optId);
-  await waitFor(() => cdp.eval(optS, "document.readyState === 'complete'"), 10000);
+  await waitFor(() => cdp.eval(optS, "document.readyState === 'complete' && !!chrome.runtime?.id"), 10000);
   const con = await cdp.eval(optS, `chrome.runtime.sendMessage({ type: 'connect', token: '${token}' })`);
   check('extension connects with the agent token', con?.ok, JSON.stringify(con));
   await waitFor(async () => (await store()).recordCalls === true, 15000);
@@ -252,7 +252,25 @@ async function dashboardPart(agentId, adminJwt, agentJwt, row) {
   await sql(`update vici_calls set disposition = 'DNC' where agent_id='${agentId}'`);
   const chk2 = await rpc(adminJwt, 'vici_dial_check', { p_phone: '+13075550142' });
   check('dial check: number marked DNC in Vici is blocked', chk2?.[0]?.dnc === true, JSON.stringify(chk2));
-  const gvSum = await rpc(adminJwt, 'metrics_summary', { p_from: todayKey, p_to: todayKey, p_agent: agentId });
+  // parity with Google Voice: trend, busiest times, transcript search, analysis checks
+  const [i0, i1] = [new Date(Date.now() - 86400e3).toISOString(), new Date(Date.now() + 3600e3).toISOString()];
+  const tl = await rpc(adminJwt, 'vici_timeline', { p_from_ts: i0, p_to_ts: i1, p_agent: agentId, p_bucket: 'hour' });
+  check('Vici trend: hourly buckets add up to the calls', Array.isArray(tl) && tl.reduce((s, b) => s + Number(b.calls), 0) === 1, JSON.stringify(tl).slice(0, 200));
+  const hm = await rpc(adminJwt, 'vici_heatmap', args);
+  check('Vici busiest times: one cell with the call', hm?.length === 1 && Number(hm[0].calls) === 1, JSON.stringify(hm));
+  // a later manual 3-second call to the DNC number, with a transcript
+  await sql(`insert into vici_calls (agent_id, vici_uid, vici_user, phone, direction, dial_type, started_at, ended_at, talk_sec, transcript, transcript_source)
+    values ('${agentId}', 'E2E-DNC-${Date.now()}', '8001', '+13075550142', 'outbound', 'manual', now(), now() + interval '3 seconds', 3, 'Agent: hello I want a refund please', 'groq')`);
+  const iss = await rpc(adminJwt, 'analysis_issues', args);
+  const vi = (iss || []).filter((i) => /^vici-/.test(i.issue_key));
+  check('Analysis: calling a DNC number in Vici = opt-out ignored (high)', vi.some((i) => i.rule === 'opt_out_ignored' && i.severity === 'high' && i.contact === '+13075550142'), JSON.stringify(vi));
+  check('Analysis: 3-second Vici call = very short call', vi.some((i) => i.rule === 'very_short_call'), JSON.stringify(vi));
+  const sc = await rpc(adminJwt, 'analysis_scorecard', args);
+  check('scorecard counts the Vici issues', sc?.[0] && Number(sc[0].high_open) >= 1, JSON.stringify(sc).slice(0, 200));
+  check('agent cannot see Vici analysis', ((await rpc(agentJwt, 'analysis_issues', args)) || []).length === 0);
+  const found = await rpc(adminJwt, 'search_transcripts', { ...args, p_q: 'refund' });
+  check('transcript search finds the Vici call', found?.some?.((f) => f.kind === 'vici' && f.contact === '+13075550142'), JSON.stringify(found).slice(0, 200));
+  const gvSum = await rpc(adminJwt, 'metrics_summary',{ p_from: todayKey, p_to: todayKey, p_agent: agentId });
   check('Google Voice overview shows 0 calls for this agent (not mixed)', Number(gvSum?.[0]?.outbound_calls ?? 0) === 0 && Number(gvSum?.[0]?.outbound_total ?? 0) === 0, JSON.stringify(gvSum).slice(0, 200));
 }
 

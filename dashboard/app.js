@@ -486,16 +486,21 @@ function weekly(daily) {
   return [...out.values()];
 }
 
-function barChart(daily) {
+const GV_BARS = {
+  a: 'outbound_total', b: 'inbound_total', aria: 'Outbound and inbound calls and texts over time', click: true,
+  tip: (d, o, inb) => `${o} outbound (${d.outbound_calls} calls, ${d.outbound_texts} texts), ${inb} inbound — click for the list`,
+  legend: ['Outbound calls + texts', 'Inbound calls + texts + voicemails'],
+};
+function barChart(daily, cfg = GV_BARS) {
   if (!daily.length) return '<div class="empty">No data</div>';
   const W = 720, H = 220, P = 26;
-  const peak = Math.max(0, ...daily.map((d) => Math.max(Number(d.outbound_total), Number(d.inbound_total))));
+  const peak = Math.max(0, ...daily.map((d) => Math.max(Number(d[cfg.a]), Number(d[cfg.b]))));
   const max = Math.max(4, Math.ceil(peak / 2) * 2); // even number >= 4 so axis ticks are distinct integers
   const bw = (W - P) / daily.length;
   const bar = Math.max(2, Math.min(18, bw / 2 - 3));
   const y = (v) => H - P - ((H - P - 8) * v) / max;
   const every = Math.ceil(daily.length / 10);
-  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Outbound and inbound calls and texts over time">`;
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${cfg.aria}">`;
   [0, max / 2, max].forEach((v) => { s += `<line x1="${P}" x2="${W}" y1="${y(v)}" y2="${y(v)}" stroke="#262626"/><text x="${P - 6}" y="${y(v) + 4}" fill="#c0c0c0" font-size="10" text-anchor="end">${v}</text>`; });
   const hourly = bucketOf() === 'hour';
   const multiDay = new Set(daily.map((d) => d.bucket.slice(0, 10))).size > 1;
@@ -503,15 +508,15 @@ function barChart(daily) {
     d.day = d.bucket.slice(0, 10);
     const lbl = d.week ? `Wk ${fmtDay(d.day)}` : bucketLabel(d.bucket, hourly, multiDay);
     const x = P + i * bw + bw / 2;
-    const o = Number(d.outbound_total);
-    const inb = Number(d.inbound_total);
+    const o = Number(d[cfg.a]);
+    const inb = Number(d[cfg.b]);
     // a full-height transparent hit area per bucket makes small bars easy to click
-    s += `<rect class="hit" data-b="${i}" x="${x - bw / 2}" y="0" width="${bw}" height="${H - P}" fill="transparent"><title>${lbl}: ${o} outbound (${d.outbound_calls} calls, ${d.outbound_texts} texts), ${inb} inbound — click for the list</title></rect>`;
+    s += `<rect class="hit" data-b="${i}" x="${x - bw / 2}" y="0" width="${bw}" height="${H - P}" fill="transparent"><title>${lbl}: ${cfg.tip(d, o, inb)}</title></rect>`;
     s += `<rect x="${x - bar - 1}" y="${y(o)}" width="${bar}" height="${H - P - y(o)}" fill="#ffba00" rx="2" pointer-events="none"/>`;
     s += `<rect x="${x + 1}" y="${y(inb)}" width="${bar}" height="${H - P - y(inb)}" fill="#00843d" rx="2" pointer-events="none"/>`;
     if (i % every === 0) s += `<text x="${x}" y="${H - 8}" fill="#c0c0c0" font-size="10" text-anchor="middle">${lbl}</text>`;
   });
-  return `${s}</svg><div class="legend"><span><i style="background:#ffba00"></i>Outbound calls + texts</span><span><i style="background:#00843d"></i>Inbound calls + texts + voicemails</span><span class="muted">Click a bar for the list</span></div>`;
+  return `${s}</svg><div class="legend"><span><i style="background:#ffba00"></i>${cfg.legend[0]}</span><span><i style="background:#00843d"></i>${cfg.legend[1]}</span>${cfg.click ? '<span class="muted">Click a bar for the list</span>' : ''}</div>`;
 }
 
 // Simple line icons for KPI tiles (stroke = currentColor)
@@ -883,10 +888,32 @@ async function viciDial(raw, btn) {
     toast(r.ok ? `Dialing ${phone} in Vici…` : `Not dialed: ${r.error}`);
   } catch (e) { toast(`Not dialed: ${e.message || e}`); } finally { if (btn) setDialBtn(btn); }
 }
+const VICI_BARS = {
+  a: 'calls', b: 'conversations', aria: 'Vici calls and conversations over time', click: false,
+  tip: (d, c, conv) => `${c} Vici calls (${d.connected} connected, ${d.manual} manual, ${d.auto} auto), ${conv} conversations, ${Math.round(Number(d.talk_sec) / 60)} min talk`,
+  legend: ['Vici calls', 'Conversations'],
+};
+let viciPreset = null; // number/name to search when opening the Vici page (from transcript search)
+function viciHeatCard(heat) {
+  const grid = Array.from({ length: 7 }, () => Array(24).fill(null));
+  heat.forEach((c) => { grid[c.dow - 1][c.hour] = c; });
+  const max = Math.max(1, ...heat.map((c) => Number(c.calls)));
+  let best = null;
+  heat.forEach((c) => { const rate = Number(c.conversations) / Number(c.calls); if (Number(c.calls) >= 3 && (!best || rate > best.rate)) best = { ...c, rate }; });
+  return `<div class="card"><h3>Busiest times</h3>
+    <div class="heat-wrap"><div class="heat" aria-label="Vici calls by weekday and hour">
+      <div></div>${Array.from({ length: 24 }, (_, h) => `<div class="hh">${h % 3 === 0 ? hourLbl(h) : ''}</div>`).join('')}
+      ${grid.map((row, d) => `<div class="hd">${DOW[d]}</div>${row.map((c, h) => `<div class="hc" style="cursor:default;background:${c ? `rgba(255,186,0,${(0.18 + 0.82 * (Number(c.calls) / max)).toFixed(2)})` : '#171717'}" title="${DOW[d]} ${hourLbl(h)}m: ${c ? `${n(c.calls)} calls · ${n(c.connected)} connected · ${n(c.conversations)} conversations` : 'no calls'}"></div>`).join('')}`).join('')}
+    </div></div>
+    <p class="small muted" style="margin:8px 0 0">${heat.length ? (best ? `Best hour to reach people: <b style="color:var(--text)">${DOW[best.dow - 1]} ${hourLbl(best.hour)}m</b> (${Math.round(best.rate * 100)}% of calls became conversations). ` : 'Colour = number of Vici calls. ') : 'No Vici calls in this period. '}${esc(TZ_NAMES[tz()] || tz())} time.</p></div>`;
+}
 async function renderVici(view) {
   const agent = isMgr() ? state.agent || null : state.agentId;
   const args = { ...rangeArgs(), p_agent: agent };
-  const [team, dispos] = await Promise.all([rpc('vici_summary', args), rpc('vici_dispositions', args)]);
+  const [i0, i1] = rangeInstants();
+  const [team, dispos, trend, heat] = await Promise.all([rpc('vici_summary', args), rpc('vici_dispositions', args),
+    rpc('vici_timeline', { p_from_ts: i0, p_to_ts: i1, p_agent: agent, p_bucket: bucketOf() }).catch(() => []),
+    rpc('vici_heatmap', args).catch(() => [])]);
   const t = ['calls', 'manual', 'auto', 'inbound', 'connected', 'conversations', 'voicemails', 'talk_sec', 'recorded']
     .reduce((o, k) => ({ ...o, [k]: team.reduce((s, r) => s + Number(r[k] || 0), 0) }), {});
   view.innerHTML = `
@@ -909,6 +936,10 @@ async function renderVici(view) {
       ${kpi('Conversations', n(t.conversations), `${n(t.voicemails)} voicemail / phone menu`, { tone: 'g', icon: ICON.talk })}
       ${kpi('Talk time', mins(t.talk_sec / 60), `${n(t.recorded)} recorded`, { tone: 'g', icon: ICON.clock })}
     </div>
+    <div class="two top">
+      ${viciHeatCard(heat)}
+      <div class="card chart"><h3>${bucketOf() === 'hour' ? 'Hourly' : 'Daily'} trend</h3><div id="vtrend">${barChart(trend, VICI_BARS)}</div></div>
+    </div>
     <div class="card"><h3>Agents</h3><div class="table-wrap"><table>
       <thead><tr><th>Agent</th><th>Vici user</th><th class="num">Calls</th><th class="num">Manual</th><th class="num">Auto</th><th class="num">Inbound</th><th class="num">Connected</th><th class="num">Conversations</th><th class="num">Talk</th><th>First / last call</th><th>Vici screen seen</th></tr></thead>
       <tbody>${team.map((r) => `<tr><td><b>${esc(r.agent_name)}</b></td><td>${esc(r.vici_user || '—')}</td><td class="num"><b>${n(r.calls)}</b></td>
@@ -923,11 +954,13 @@ async function renderVici(view) {
     rows = await rpc('vici_calls_list', { ...args, p_search: $('#vsearch').value.trim() || null, p_limit: 500 });
     const paths = [...new Set(rows.map((r) => r.recording_path).filter(Boolean))];
     const signed = paths.length ? Object.fromEntries((((await sb.storage.from('recordings').createSignedUrls(paths, 3600)).data) || []).filter((x) => x.signedUrl).map((x) => [x.path, x.signedUrl])) : {};
-    $('#vtable').innerHTML = `<table>
+    const perNumber = rows.reduce((m, r) => (r.phone ? m.set(r.phone, (m.get(r.phone) || 0) + 1) : m), new Map());
+    const q = $('#vsearch').value.trim();
+    $('#vtable').innerHTML = `${q ? `<p class="small">Showing calls matching <b>${esc(q)}</b> · <a href="#" id="vclear">show all</a></p>` : ''}<table>
       <thead><tr><th>When</th><th>Agent</th><th>Contact</th><th>Type</th><th>Status</th><th class="num">Talk</th><th>Recording &amp; transcript</th></tr></thead>
       <tbody>${rows.map((r) => `<tr>
         <td style="white-space:nowrap">${fmtTime(r.started_at)}</td><td>${esc(r.agent_name)}</td>
-        <td><b>${esc(r.contact_name || r.phone || '—')}</b>${r.contact_name && r.phone ? `<div class="small muted">${esc(r.phone)}</div>` : ''}${US_PHONE(r.phone) && r.disposition?.toUpperCase() !== 'DNC' ? ` <button class="btn dark" data-dial="${esc(r.phone)}">Call back</button>` : ''}${r.campaign ? `<div class="small muted">${esc(r.campaign)}${r.lead_id ? ` · lead ${esc(r.lead_id)}` : ''}</div>` : ''}</td>
+        <td><b>${esc(r.contact_name || r.phone || '—')}</b>${r.contact_name && r.phone ? `<div class="small muted">${esc(r.phone)}</div>` : ''}${perNumber.get(r.phone) > 1 && q !== r.phone ? ` <a href="#" class="small" data-vphone="${esc(r.phone)}" title="Every Vici call with this number">${perNumber.get(r.phone)} calls</a>` : r.phone && q !== r.phone ? ` <a href="#" class="small" data-vphone="${esc(r.phone)}" title="Every Vici call with this number">history</a>` : ''}${US_PHONE(r.phone) && r.disposition?.toUpperCase() !== 'DNC' ? ` <button class="btn dark" data-dial="${esc(r.phone)}">Call back</button>` : ''}${r.campaign ? `<div class="small muted">${esc(r.campaign)}${r.lead_id ? ` · lead ${esc(r.lead_id)}` : ''}</div>` : ''}</td>
         <td class="small">${esc(DIAL_TYPE[r.dial_type] || r.dial_type || '—')}</td>
         <td>${r.disposition ? `<span class="badge">${esc(r.disposition)}</span>` : ''}${r.conversation ? ' <span class="badge good">conversation</span>' : ''}${answeredBadge(r)}</td>
         <td class="num">${dur(r.talk_sec)}</td>
@@ -936,8 +969,12 @@ async function renderVici(view) {
           ${isMgr() && r.recording_path ? `<div class="tx-row"><button class="btn dark tx-btn" data-vredo="${r.id}">${r.transcript ? 'Re-transcribe' : 'Transcribe now'}</button><span class="small muted tx-msg"></span></div>` : ''}</td></tr>`).join('')
         || '<tr><td colspan="7" class="empty">No Vici calls in this period</td></tr>'}</tbody></table>`;
     $('#vtable').querySelectorAll('[data-vredo]').forEach((b) => b.addEventListener('click', () => requestTranscript('vici', b.dataset.vredo, b)));
+    $('#vtable').querySelectorAll('[data-vphone]').forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); $('#vsearch').value = a.dataset.vphone; load(); }));
+    $('#vclear')?.addEventListener('click', (e) => { e.preventDefault(); $('#vsearch').value = ''; load(); });
+    fixRecDuration($('#vtable'));
     $('#vtable').querySelectorAll('[data-dial]').forEach((b) => { setDialBtn(b); b.addEventListener('click', () => viciDial(b.dataset.dial, b)); });
   };
+  if (viciPreset) { $('#vsearch').value = viciPreset; viciPreset = null; }
   setDialBtn($('#vdialBtn'));
   $('#vdialBtn').addEventListener('click', (e) => viciDial($('#vdial').value, e.currentTarget));
   $('#vdial').addEventListener('keydown', (e) => { if (e.key === 'Enter') viciDial($('#vdial').value, $('#vdialBtn')); });
@@ -1145,8 +1182,11 @@ async function renderDetail(key, head) {
     const [kind, id] = btn.dataset.redo.split(':');
     if (await requestTranscript(kind, id, btn)) setTimeout(() => renderDetail(key, head), 1500);
   }));
-  // WebM recordings from the browser don't store their length: find it so the player shows 0:00 / 1:23
-  $('#detail').querySelectorAll('audio.rec').forEach((a) => a.addEventListener('loadedmetadata', () => {
+  fixRecDuration($('#detail'));
+}
+/** WebM recordings from the browser don't store their length: find it so the player shows 0:00 / 1:23 and can seek. */
+function fixRecDuration(root) {
+  root.querySelectorAll('audio.rec').forEach((a) => a.addEventListener('loadedmetadata', () => {
     if (a.duration !== Infinity) return;
     const back = () => { a.removeEventListener('timeupdate', back); a.currentTime = 0; };
     a.addEventListener('timeupdate', back); a.currentTime = 1e7;
@@ -1257,7 +1297,7 @@ async function renderRecordings(view) {
     <div class="card"><h3>Search transcripts</h3>
       <div class="row"><input id="txQ" placeholder="Word or phrase, e.g. refund, price, cancel" style="max-width:420px" aria-label="Search transcripts"></div>
       <div id="txFound" class="table-wrap"></div>
-      <p class="small muted">Searches call transcripts and voicemail text in the selected period${state.agent ? ' for the selected agent' : ''}.</p></div>
+      <p class="small muted">Searches Google Voice and Vici call transcripts and voicemail text in the selected period${state.agent ? ' for the selected agent' : ''}.</p></div>
     <div class="card"><h3>Transcription jobs</h3>
       <div class="table-wrap"><table><thead><tr><th>When</th><th>Agent</th><th>Contact</th><th>Type</th><th class="num">Length</th><th>Status</th><th>By</th><th></th></tr></thead>
       <tbody>${jobs.map((j) => `<tr data-kind="${j.kind === 'recording' ? 'recording' : j.kind}" data-id="${j.ref_id}"${j.agent_id ? ` data-key="${j.agent_id}~${j.contact_id || ''}"` : ''}>
@@ -1294,9 +1334,10 @@ async function renderRecordings(view) {
       if (q.length < 2) { $('#txFound').innerHTML = ''; return; }
       const found = await rpc('search_transcripts', { ...rangeArgs(), p_q: q, p_agent: state.agent || null });
       const re = new RegExp(escRe(esc(q)), 'gi');
-      $('#txFound').innerHTML = `<table><tbody>${found.map((f) => `<tr class="click" data-key="${f.agent_id}~${f.contact_id || ''}"><td>${fmtTime(f.occurred_at)}</td><td>${esc(f.agent_name)}</td><td>${esc(f.contact || '—')}</td>
+      $('#txFound').innerHTML = `<table><tbody>${found.map((f) => `<tr class="click" ${f.kind === 'vici' ? `data-vici="${esc(f.contact || '')}"` : `data-key="${f.agent_id}~${f.contact_id || ''}"`}><td>${fmtTime(f.occurred_at)}</td><td>${esc(f.agent_name)}</td><td>${esc(f.contact || '—')}${f.kind === 'vici' ? ' <span class="badge">Vici</span>' : ''}</td>
         <td style="white-space:normal">${esc(f.snippet).replace(re, (m) => `<mark>${m}</mark>`)}</td></tr>`).join('') || '<tr><td class="empty">No matches</td></tr>'}</tbody></table>`;
       $('#txFound').querySelectorAll('tr[data-key]').forEach((row) => row.addEventListener('click', () => { location.hash = `#/conversations/${row.dataset.key}`; }));
+      $('#txFound').querySelectorAll('tr[data-vici]').forEach((row) => row.addEventListener('click', () => { viciPreset = row.dataset.vici; location.hash = '#/vici'; }));
     }, 300);
   });
 }
