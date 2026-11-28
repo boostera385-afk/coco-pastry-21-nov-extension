@@ -46,7 +46,7 @@ function page({ withGlobals = true, fetch = undefined } = {}) {
   const dial = (code, number) => new Promise((res) => {
     const reqId = `r${Math.random()}`;
     const t = setInterval(() => { const r = posted.find((m) => m.type === 'dial-result' && m.reqId === reqId); if (r) { clearInterval(t); res(r); } }, 5);
-    toPage({ source: 'coco-ext', type: 'dial', reqId, code, number });
+    toPage({ source: 'coco-ext', type: 'dial2', reqId, code, number });
   });
   return { win, posted, tick, ajax, setField, events, dial };
 }
@@ -97,6 +97,19 @@ test('screen without the live flag: AJAX call log start/end drives the call', ()
   assert.deepEqual(ev.map((e) => e.stage), ['start', 'end']);
   assert.equal(ev[0].vici_uid, '17.5');
   assert.equal(ev[0].phone, '+14155550100');
+});
+
+test('dial that never connects (hung up while ringing) is counted as a 0 s attempt, no recording gate', () => {
+  const p = page();
+  p.ajax('/agc/vdc_db_query.php', 'ACTION=manDiaLnextCaLL&phone_code=1&phone_number=3104104000');
+  p.ajax('/agc/vdc_db_query.php', 'ACTION=manDiaLlogCaLL&stage=start&lead_id=7&uniqueid=88.1&phone_code=1&phone_number=3104104000');
+  p.tick();
+  p.ajax('/agc/vdc_db_query.php', 'ACTION=manDiaLlogCaLL&stage=end&lead_id=7&uniqueid=88.1');
+  const ev = p.events();
+  assert.deepEqual(ev.map((e) => e.stage), ['start', 'end']);
+  assert.equal(ev[1].vici_uid, '88.1'); assert.equal(ev[1].phone, '+13104104000');
+  assert.equal(ev[1].talk_sec, 0); assert.equal(ev[1].dial_type, 'manual');
+  assert.equal(p.posted.filter((m) => m.type === 'call-state').length, 0);
 });
 
 test('inbound call is labelled inbound', () => {
