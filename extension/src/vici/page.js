@@ -198,6 +198,15 @@
   });
 
   // diagnostics for the dashboard (counts + which screen variables exist; no lead data)
-  if (top) setInterval(() => post({ type: 'diag', diag: { actions: S.actions, globals: S.globals, live: S.live, user: viciUser(), page: location.pathname.slice(0, 60) } }), 30e3);
+  // Sent right away, whenever login / call state changes, on request (ping) and every 30 s as a heartbeat.
+  const diag = () => post({ type: 'diag', diag: { actions: S.actions, globals: S.globals, live: S.live, user: viciUser(),
+    loginForm: !viciUser() && !!document.querySelector?.('input[name="VD_login"], input[name="user"], input[name="phone_login"]'),
+    page: location.pathname.slice(0, 60), title: String(document.title || '').slice(0, 60) } });
+  if (top) {
+    let sig = '';
+    setInterval(() => { const s = `${viciUser()}|${S.live}`; if (s !== sig) { sig = s; diag(); } }, 1000);
+    setInterval(diag, 30e3);
+    window.addEventListener('message', (ev) => { if (ev.source === window && ev.data?.source === 'coco-ext' && ev.data.type === 'diag-now') diag(); });
+  }
   window.addEventListener('pagehide', () => { if (S.call) endCall(); });
 })();

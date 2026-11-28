@@ -32,3 +32,11 @@ kbd { font: 600 11px var(--body); background: var(--surface-2); border: 1px soli
 .update .small { color: #000; opacity: .8; }
 .update .btn { justify-self: start; background: #000; color: var(--yellow); }
 .update .row { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; } #updateMsg { margin-top: 6px; }
+
+.vici { margin-top: 10px; padding: 10px 12px; display: grid; gap: 6px; }
+.vici-nums { display: flex; gap: 14px; align-items: center; }
+.vici-nums .value { font-size: 22px; font-weight: 700; line-height: 1.1; }
+.vici-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.vici-test { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 4px; font-size: 12px; }
+.vici-test li { display: grid; grid-template-columns: 18px 1fr; gap: 4px; }
+.vici-test .fix { grid-column: 2; color: var(--muted); }

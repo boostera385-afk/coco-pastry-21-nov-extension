@@ -11,6 +11,35 @@ const MAX_SAMPLES = 60;        // sample recorder (Settings → Record samples)
 const TAB_STALE_MS = 11 * 60e3; // no heartbeat for this long = no Voice tab open
 const VOICE_URL = 'https://voice.google.com/';
 const VICI_TABS = 'https://*.callengine.org/*';   // Vici Dialer agent screen (kept separate from Google Voice)
+export const VICI_DEFAULT_URL = 'https://dm26.callengine.org/agc/vicidial.php';
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+/** https://host:446/agc/x.php -> https://host/* (match patterns cover every port). */
+export function originPattern(u) {
+  try { const x = new URL(String(u || '')); return x.protocol === 'https:' && x.hostname ? `https://${x.hostname}/*` : null; } catch { return null; }
+}
+const isBuiltInVici = (pattern) => /^https:\/\/([a-z0-9-]+\.)*callengine\.org\/\*$/i.test(pattern || '');
+async function viciPatterns() {
+  const { viciUrl } = await get('viciUrl');
+  const p = originPattern(viciUrl);
+  return [...new Set([VICI_TABS, ...(p ? [p] : [])])];
+}
+const viciTabs = async () => chrome.tabs.query({ url: await viciPatterns() }).catch(() => []);
+/** A Vici server outside callengine.org (set in Settings): its permission was granted there; register the scripts. */
+async function ensureViciScripts() {
+  const ids = ['coco-vici-main', 'coco-vici-bridge'];
+  try {
+    const have = (await chrome.scripting.getRegisteredContentScripts({ ids })).map((x) => x.id);
+    if (have.length) await chrome.scripting.unregisterContentScripts({ ids: have });
+    const { viciUrl } = await get('viciUrl');
+    const p = originPattern(viciUrl);
+    if (!p || isBuiltInVici(p) || !(await chrome.permissions.contains({ origins: [p] }))) return false;
+    await chrome.scripting.registerContentScripts([
+      { id: ids[0], matches: [p], js: ['src/vici/page.js', 'src/recorder.js'], world: 'MAIN', runAt: 'document_start', allFrames: true, persistAcrossSessions: true },
+      { id: ids[1], matches: [p], js: ['src/vici/bridge.js'], runAt: 'document_start', allFrames: true, persistAcrossSessions: true },
+    ]);
+    return true;
+  } catch { return false; }
+}
 
 const get = (keys) => chrome.storage.local.get(keys);
 const set = (obj) => chrome.storage.local.set(obj);
@@ -108,6 +137,7 @@ chrome.runtime.onInstalled.addListener(async ({ reason }) => {
     await set({ needsVoiceReload: open.length > 0 });
   }
   injectIntoOpenVoiceTabs();
+  await ensureViciScripts();
   injectIntoOpenViciTabs();
 });
 chrome.runtime.onStartup.addListener(setup);
@@ -168,8 +198,9 @@ async function injectIntoOpenVoiceTabs() {
   }
 }
 
+// No reload needed: Vici logs the agent out on reload, so Coco is added to the open screen instead.
 async function injectIntoOpenViciTabs() {
-  for (const t of await chrome.tabs.query({ url: VICI_TABS }).catch(() => [])) {
+  for (const t of await viciTabs()) {
     try {
       await chrome.scripting.executeScript({ target: { tabId: t.id, allFrames: true }, files: ['src/vici/page.js', 'src/recorder.js'], world: 'MAIN' });
       await chrome.scripting.executeScript({ target: { tabId: t.id, allFrames: true }, files: ['src/vici/bridge.js'] });
@@ -188,7 +219,17 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
         break;
       case 'vici-dial': return reply(await viciDial(msg.phone));
       case 'vici-sample': await onViciSample(msg.sample); break;
-      case 'vici-diag': await set({ viciDiag: msg.diag }); break;
+      case 'vici-diag': {
+        const { viciDiag: was } = await get('viciDiag');
+        const changed = was?.user !== msg.diag?.user || was?.live !== msg.diag?.live;
+        await set({ viciDiag: { ...msg.diag, at: Date.now() }, viciSeenAt: Date.now(), ...(changed ? { viciHeartbeatPending: true } : {}) });
+        if (changed) { await refreshStatus(); clearTimeout(viciSoon); viciSoon = setTimeout(syncVici, 1500); }
+        break;
+      }
+      case 'open-vici': await openVici(); break;
+      case 'reload-vici': for (const t of await viciTabs()) await chrome.tabs.reload(t.id).catch(() => {}); break;
+      case 'vici-test': return reply(await runViciTest());
+      case 'vici-url-changed': await ensureViciScripts(); await injectIntoOpenViciTabs(); await refreshStatus(); break;
       case 'vici-rec-diag': {
         const { viciRecDiag = {} } = await get('viciRecDiag');
         viciRecDiag[String(sender.frameId ?? 0)] = { ...msg.diag, url: (sender.url || '').split('?')[0].slice(0, 80), at: Date.now() };
@@ -368,12 +409,14 @@ async function refreshStatus() {
   const summary = fresh ? st.serverSummary.today : summarize(Object.values(st.events || {}), today, today, tz);
 
   const voiceOpen = (await chrome.tabs.query({ url: 'https://voice.google.com/*' }).catch(() => [])).length > 0;
-  const viciOpen = (await chrome.tabs.query({ url: VICI_TABS }).catch(() => [])).length > 0;
+  const vTabs = await viciTabs();
+  const viciOpen = vTabs.length > 0;
+  const vs = await viciState(vTabs);
   let level = 'ok';
   let text = 'Tracking';
   if (!st.agentToken) { level = 'bad'; text = 'Not connected — paste your token in Settings'; }
   else if (st.paused) { level = 'paused'; text = 'Paused'; }
-  else if (!voiceOpen && viciOpen) { text = 'Tracking Vici Dialer'; }
+  else if (!voiceOpen && viciOpen) { level = vs.level; text = vs.text; }
   else if (!voiceOpen) { level = 'warn'; text = 'Google Voice is not open — open it to track'; }
   else if (!st.lastHeartbeat || Date.now() - st.lastHeartbeat > TAB_STALE_MS) { level = 'warn'; text = 'Open Google Voice to track'; }
   else if (st.needsVoiceReload) { level = 'warn'; text = 'Reload Google Voice to finish the update'; }
@@ -386,7 +429,7 @@ async function refreshStatus() {
   else if (st.lastSyncError) { level = 'bad'; text = 'Sync error — retrying'; }
   else if ((st.queue || []).length) { level = 'warn'; text = `${st.queue.length} waiting to sync`; }
 
-  await set({ status: { level, text, at: Date.now(), voiceOpen, viciOpen }, summaryToday: summary });
+  await set({ status: { level, text, at: Date.now(), voiceOpen, viciOpen }, summaryToday: summary, viciStatus: vs });
   if (!voiceOpen && !viciOpen) { const { recState } = await get('recState'); if (recState?.on) await set({ recState: { on: false, at: Date.now() } }); }
 
   const colors = { ok: '#00843d', warn: '#ffba00', bad: '#cc3433', paused: '#777777' };
@@ -684,11 +727,72 @@ async function viciDial(phone) {
   if (!st.agentToken) return { ok: false, error: 'Extension not connected' };
   if (st.paused) return { ok: false, error: 'Tracking is paused — resume first' };
   if (Date.now() - lastDialAt < 5000) return { ok: false, error: 'Wait a few seconds between dials' };
-  const tabs = await chrome.tabs.query({ url: VICI_TABS }).catch(() => []);
+  const tabs = await viciTabs();
   const tab = tabs.find((x) => /\/agc\/vicidial\.php/i.test(x.url || '')) || tabs[0];
   if (!tab) return { ok: false, error: 'Open the Vici agent screen in this browser and log in' };
   lastDialAt = Date.now();
   const r = await chrome.tabs.sendMessage(tab.id, { type: 'vici-dial', ...t }, { frameId: 0 }).catch((e) => ({ ok: false, error: String(e?.message || e) }));
   if (r?.ok) { await chrome.tabs.update(tab.id, { active: true }).catch(() => {}); await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {}); }
   return r || { ok: false, error: 'Vici screen did not answer — reload it' };
+}
+
+// ---------- Vici status (side panel / settings) + self-test ----------
+let lastHeal = 0;
+/** closed -> starting (Coco not active on the open screen) -> login -> ready / oncall. Heals itself when it can. */
+async function viciState(tabs) {
+  const st = await get(['viciDiag', 'viciRecDiag', 'viciUser', 'viciSyncError', 'viciSyncAt', 'recState']);
+  const d = st.viciDiag;
+  const fresh = d && Date.now() - (d.at || 0) < 75e3;
+  const phone = Object.values(st.viciRecDiag || {}).some((x) => x.pcs > 0 && Date.now() - (x.at || 0) < 12 * 3600e3);
+  const base = { phone, user: (fresh && d.user) || st.viciUser || null, syncError: st.viciSyncError || null, syncAt: st.viciSyncAt || null };
+  if (!tabs.length) return { ...base, state: 'closed', level: 'warn', text: 'Vici screen is not open' };
+  if (!fresh) {
+    if (Date.now() - lastHeal > 60e3) { lastHeal = Date.now(); injectIntoOpenViciTabs(); }
+    return { ...base, state: 'starting', level: 'warn', text: 'Connecting to the Vici screen…' };
+  }
+  if (!d.user) return { ...base, state: 'login', level: 'warn', text: 'Log in on the Vici screen' };
+  if (d.live) return { ...base, state: 'oncall', level: 'ok', text: `On a Vici call${st.recState?.on ? ' · ● recording' : ''}` };
+  return { ...base, state: 'ready', level: 'ok', text: `Vici ready · user ${d.user}` };
+}
+
+async function openVici() {
+  const [tab] = await viciTabs();
+  if (tab) { await chrome.tabs.update(tab.id, { active: true }); await chrome.windows.update(tab.windowId, { focused: true }); return; }
+  const { viciUrl } = await get('viciUrl');
+  await chrome.tabs.create({ url: viciUrl || VICI_DEFAULT_URL });
+}
+
+/** One click checks every link in the chain and says how to fix the first broken one. */
+async function runViciTest() {
+  const steps = [];
+  const add = (ok, label, fix = '', warn = false) => steps.push({ ok: !!ok, warn: !ok && warn, label, fix: ok ? '' : fix });
+  const st = await get(['agentToken', 'paused', 'recordCalls']);
+  add(st.agentToken, 'Extension connected to Coco', 'Open Settings and paste your Coco token');
+  if (st.paused) add(false, 'Tracking is running', 'Click Resume in the side panel');
+  const tabs = await viciTabs();
+  add(tabs.length, 'Vici agent screen open in this browser', 'Click "Open Vici", log in with your Vici user and phone, then test again');
+  if (tabs.length) {
+    const ping = async () => { let ok = false; for (const t of tabs) if ((await chrome.tabs.sendMessage(t.id, { type: 'vici-ping' }, { frameId: 0 }).catch(() => null))?.ok) ok = true; return ok; };
+    let alive = await ping();
+    if (!alive) { await injectIntoOpenViciTabs(); await pause(1500); alive = await ping(); }
+    await pause(1200);
+    const { viciDiag, viciRecDiag } = await get(['viciDiag', 'viciRecDiag']);
+    const fresh = alive && viciDiag && Date.now() - viciDiag.at < 15e3;
+    add(fresh, 'Coco is active on the Vici screen', 'Reload the Vici tab once (between calls), log in again, then test again');
+    if (fresh) {
+      add(viciDiag.user, viciDiag.user ? `Logged in to Vici as ${viciDiag.user}` : 'Logged in to Vici', 'Log in on the Vici screen (user + phone login), then test again');
+      const known = viciDiag.globals && viciDiag.globals.VD_live_customer_call !== 'missing';
+      add(known || !viciDiag.user, 'Call detection ready', 'This Vici screen is non-standard — make one test call; your admin will see the details', true);
+      const phone = Object.values(viciRecDiag || {}).some((x) => x.pcs > 0);
+      add(phone, 'Browser phone detected (calls will be recorded)', 'Reload the Vici tab once between calls and allow the microphone, so Coco can see the phone', true);
+    }
+  }
+  add(st.recordCalls !== false, 'Call recording on', 'Your admin turned recording off for you (calls are still counted)', true);
+  await set({ viciHeartbeatPending: true, viciBackoffUntil: 0 });
+  const r = await syncVici();
+  add(r.ok, 'Coco server reachable', `Sync failed: ${r.error || 'unknown'} — check your internet, then test again`);
+  const result = { steps, ok: steps.every((x) => x.ok || x.warn), at: Date.now() };
+  await set({ viciTest: result });
+  await refreshStatus();
+  return result;
 }

@@ -51,6 +51,7 @@
   });
   if (window === window.top) {
     chrome.runtime.onMessage.addListener((m, _s, sendResponse) => {
+      if (m?.type === 'vici-ping') { toPage({ type: 'diag-now' }); sendResponse({ ok: true, url: location.href.split('?')[0] }); return false; }
       if (m?.type !== 'vici-dial') return false;
       const reqId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const timer = setTimeout(() => { dials.delete(reqId); sendResponse({ ok: false, error: 'Vici screen did not answer in time' }); }, 20000);

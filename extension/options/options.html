@@ -58,6 +58,20 @@
   </div>
 
   <div class="card">
+    <h3>Vici Dialer</h3>
+    <p class="small">Calls on your Vici agent screen are counted and recorded automatically, separately from Google Voice. Keep the Vici screen open in this Chrome and log in as usual.</p>
+    <label for="viciUrl">Vici agent screen address</label>
+    <div class="row">
+      <input id="viciUrl" type="url" spellcheck="false" placeholder="https://dm26.callengine.org/agc/vicidial.php" style="flex:1;min-width:240px">
+      <button class="btn dark" id="viciSave">Save</button>
+      <button class="btn" id="viciOpen">Open Vici</button>
+      <button class="btn dark" id="viciTest">Test Vici</button>
+    </div>
+    <p class="small" id="viciMsg" role="status"></p>
+    <ul class="small" id="viciSteps" style="list-style:none;padding:0;margin:6px 0 0;display:grid;gap:4px"></ul>
+  </div>
+
+  <div class="card">
     <h3>Parser check (setup only)</h3>
     <p class="small">Records the last 25 Google Voice responses on this computer so the developer can verify the field map. Turn on, use Voice for a few minutes (open Calls, Messages, a thread, send a text), then download. Phone numbers are redacted in the download. Turn off afterwards.</p>
     <div class="row">

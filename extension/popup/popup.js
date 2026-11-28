@@ -13,6 +13,45 @@ const ago = (ms) => {
 };
 const DOT = { ok: 'ok', warn: 'warn', bad: 'bad', paused: '' };
 
+const VICI_FIX = {
+  closed: ['Open Vici', 'open-vici', 'Open your Vici agent screen in this browser and log in (user + phone).'],
+  starting: ['Test Vici', 'vici-test', 'Coco is connecting to the open Vici screen. If this stays, click Test Vici.'],
+  login: ['Go to Vici', 'open-vici', 'Log in on the Vici screen with your Vici user and phone login.'],
+  ready: [null, null, 'Calls on the Vici screen are counted and recorded automatically.'],
+  oncall: [null, null, 'This call is being tracked.'],
+};
+function renderVici(st) {
+  const box = $('viciBox');
+  box.hidden = !st.agentToken;
+  if (box.hidden) return;
+  const v = st.viciStatus || { state: 'closed', level: 'warn', text: 'Vici screen is not open' };
+  $('viciDot').className = `dot ${DOT[v.level] ?? ''}`;
+  $('viciState').textContent = v.text;
+  const [label, action, help] = VICI_FIX[v.state] || VICI_FIX.closed;
+  const phone = v.state === 'ready' && !v.phone ? ' Browser phone not seen yet — click Test Vici.' : '';
+  $('viciHelp').textContent = help + phone;
+  $('viciFix').hidden = !label || label === 'Test Vici';
+  if (label) { $('viciFix').textContent = label; $('viciFix').dataset.action = action; }
+  const vs = st.viciSummary;
+  $('viciCalls').textContent = vs?.calls ?? 0;
+  const talk = Math.round((vs?.talkSec || 0) / 60);
+  $('viciSub').textContent = `${vs?.connected ?? 0} connected · ${vs?.conversations ?? 0} conversations · ${talk} min talk`
+    + `${v.user ? ` · user ${v.user}` : ''}${(st.viciQueue || []).length ? ` · ${st.viciQueue.length} waiting` : ''}${v.syncError ? ` · ${v.syncError}` : ''}`;
+  const t = st.viciTest;
+  const list = $('viciTestList');
+  list.hidden = !t || Date.now() - t.at > 30 * 60e3;
+  if (!list.hidden) {
+    list.replaceChildren(...t.steps.map((x) => {
+      const li = document.createElement('li');
+      const ico = document.createElement('span'); ico.textContent = x.ok ? '✅' : x.warn ? '⚠️' : '❌';
+      const txt = document.createElement('span'); txt.textContent = x.label;
+      li.append(ico, txt);
+      if (x.fix) { const f = document.createElement('span'); f.className = 'fix'; f.textContent = x.fix; li.append(f); }
+      return li;
+    }));
+  }
+}
+
 async function render() {
   const st = await chrome.storage.local.get(null);
   const tz = st.timezone || DEFAULT_TZ;
@@ -38,18 +77,11 @@ async function render() {
   const recOn = st.recState?.on === true && Date.now() - (st.recState.at || 0) < 4 * 3600e3;
   const recTxt = !st.agentToken ? '' : st.recordCalls === false ? ' · call recording off (admin)' : recOn ? ' · ● recording this call' : ' · calls are recorded';
   $('statusSub').textContent = st.agentToken ? `Last sync ${ago(st.lastSyncAt)}${st.lastSyncError ? ` · ${st.lastSyncError}` : ''} · numbers ${serverFresh ? 'from dashboard' : 'local (not yet synced)'}${recTxt}` : '';
-  $('openVoiceBox').hidden = !st.agentToken || st.paused || !(st.status?.voiceOpen === false || /Open Google Voice/i.test(st.status?.text || ''));
+  $('openVoiceBox').hidden = !st.agentToken || st.paused || !!st.status?.viciOpen || !(st.status?.voiceOpen === false || /Open Google Voice/i.test(st.status?.text || ''));
   $('goVoice').classList.toggle('attn', st.status?.voiceOpen === false && !!st.agentToken && !st.paused);
   $('setup').hidden = !!st.agentToken;
-  // Vici Dialer: separate numbers (never added to the Google Voice tiles above)
-  const vs = st.viciSummary;
-  $('viciBox').hidden = !st.agentToken || !(st.viciSeenAt || vs?.calls);
-  if (!$('viciBox').hidden) {
-    $('viciCalls').textContent = vs?.calls ?? 0;
-    const talk = Math.round((vs?.talkSec || 0) / 60);
-    $('viciSub').textContent = `${vs?.connected ?? 0} connected · ${vs?.conversations ?? 0} conv. · ${talk} min talk${st.viciUser ? ` · user ${st.viciUser}` : ''}`
-      + `${(st.viciQueue || []).length ? ` · ${st.viciQueue.length} waiting` : ''}${st.viciSyncError ? ` · ${st.viciSyncError}` : ''}`;
-  }
+  // Vici Dialer: own card, own numbers (never added to the Google Voice tiles above)
+  renderVici(st);
   const up = st.latestExtension;
   const mine = chrome.runtime.getManifest().version;
   const showUp = !!up?.updateAvailable && up.version !== mine;
@@ -93,6 +125,11 @@ $('sync').addEventListener('click', async () => {
   render();
 });
 $('openVoice').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'open-voice' }));
+$('viciFix').addEventListener('click', (e) => chrome.runtime.sendMessage({ type: e.currentTarget.dataset.action || 'open-vici' }));
+$('viciTest').addEventListener('click', async (e) => {
+  const b = e.currentTarget; b.disabled = true; b.textContent = 'Testing…';
+  try { await chrome.runtime.sendMessage({ type: 'vici-test' }); } finally { b.disabled = false; b.textContent = 'Test Vici'; }
+});
 $('goVoice').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'open-voice' }));
 $('updateHow').addEventListener('click', () => chrome.tabs.create({ url: `${DASHBOARD_URL}/#/extension` }));
 // One click: download the new version into Coco's own folder and restart (first time: pick the folder once)

@@ -70,7 +70,7 @@
       this.remote = new Map(); // track id -> track
       this.ctx = null; this.cur = null; this.connected = new Set(); this.keep = [];
       this.timer = null;
-      diag.pcs++;
+      diag.pcs++; setTimeout(report, 500);
       pc.addEventListener('track', (e) => { if (e.track.kind === 'audio') this.addRemote(e.track); });
       const onState = () => {
         const s = pc.connectionState || pc.iceConnectionState;

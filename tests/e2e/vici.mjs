@@ -63,7 +63,8 @@ const rpc = async (jwt, fn, body) => {
 const PAGE = `<!doctype html><html><head><title>mock vici</title></head><body><h1>Mock Vici agent screen</h1>
 <form name="vicidial_form"><input name="lead_id"><input name="uniqueid"><input name="phone_code"><input name="phone_number">
 <input name="first_name"><input name="last_name"></form><script>
-  var VD_live_customer_call = 0, auto_dial_level = 1, campaign = 'E2ECAMP', user = '8001', pass = 'AGENTPW', inOUT = 'OUT', VDCL_group_id = '';
+  var VD_live_customer_call = 0, auto_dial_level = 1, campaign = 'E2ECAMP', inOUT = 'OUT', VDCL_group_id = '';
+  window.__login = () => { window.user = '8001'; window.pass = 'AGENTPW'; };
   async function phone() {
     const f = document.createElement('iframe'); f.srcdoc = '<p>caller</p>'; document.body.appendChild(f);
     await new Promise((r) => f.addEventListener('load', r, { once: true }));
@@ -140,6 +141,12 @@ async function browserPart(token, agentId, adminJwt) {
   const con = await cdp.eval(optS, `chrome.runtime.sendMessage({ type: 'connect', token: '${token}' })`);
   check('extension connects with the agent token', con?.ok, JSON.stringify(con));
   await waitFor(async () => (await store()).recordCalls === true, 15000);
+  const closed = await waitFor(async () => (await store()).viciStatus?.state === 'closed' && (await store()).viciStatus, 8000);
+  check('status before Vici is open: "Vici screen is not open"', closed?.state === 'closed', JSON.stringify(closed));
+  const { targetId: panelId } = await cdp.send('Target.createTarget', { url: `chrome-extension://${extId}/popup/popup.html` });
+  const panelS = await cdp.attach(panelId);
+  const card = await waitFor(() => cdp.eval(panelS, "!document.getElementById('viciBox').hidden && document.getElementById('viciFix').textContent"), 8000);
+  check('side panel always shows the Vici card with an "Open Vici" button', card === 'Open Vici', String(card));
 
   const { targetId: pageId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
   const pageS = await cdp.attach(pageId);
@@ -147,13 +154,24 @@ async function browserPart(token, agentId, adminJwt) {
   await cdp.send('Page.navigate', { url: 'https://dm26.callengine.org/agc/vicidial.php' }, pageS);
   check('Vici hook + recorder active on the agent screen', await waitFor(() => cdp.eval(pageS, 'window.__cocoVici === 1 && window.__cocoRecorder >= 1'), 10000));
   check('browser phone connected (WebRTC up for the whole login)', await waitFor(() => cdp.eval(pageS, "document.title === 'phone ready'"), 15000));
+  const login = await waitFor(async () => (await store()).viciStatus?.state === 'login', 10000);
+  check('status before Vici login: "Log in on the Vici screen"', login, JSON.stringify((await store()).viciStatus));
+  await cdp.eval(pageS, 'window.__login(); true');
+  const ready = await waitFor(async () => { const v = (await store()).viciStatus; return v?.state === 'ready' && v; }, 10000);
+  check('after login: "Vici ready · user 8001" with the browser phone detected', ready?.text === 'Vici ready · user 8001' && ready.phone === true, JSON.stringify(ready));
+  const panelText = await waitFor(() => cdp.eval(panelS, "document.getElementById('viciState').textContent.includes('8001') && document.getElementById('viciState').textContent"), 8000);
+  check('side panel shows the ready state', /Vici ready/.test(panelText || ''), String(panelText));
+  const t = await cdp.eval(optS, "chrome.runtime.sendMessage({ type: 'vici-test' })");
+  check('Test Vici: every step passes', t?.ok === true && t.steps.every((x) => x.ok), JSON.stringify(t?.steps));
+  await waitFor(() => cdp.eval(panelS, "document.querySelectorAll('#viciTestList li').length"), 5000);
+  check('side panel lists the test results', (await cdp.eval(panelS, "document.querySelectorAll('#viciTestList li').length")) >= 6);
 
   // phone connected, no customer: nothing may be recorded
   await sleep(5000);
   const idle = await store();
   check('no recording while the phone is connected but no customer is on the line', !idle.recState?.on, JSON.stringify(idle.recState));
-  const panel = await waitFor(async () => (await store()).status?.text === 'Tracking Vici Dialer', 8000);
-  check('extension status says "Tracking Vici Dialer" (Google Voice not open)', panel);
+  const panel = await waitFor(async () => (await store()).status?.text === 'Vici ready · user 8001', 8000);
+  check('main status shows the Vici state when Google Voice is not open (no "open Google Voice" nag)', panel, (await store()).status?.text);
 
   const uid = `E2E${Date.now()}.42`;
   cdp.eval(pageS, `window.__call(6, '${uid}')`).catch(() => {});

@@ -76,7 +76,46 @@ $('download').addEventListener('click', async () => {
   Object.assign(document.createElement('a'), { href: url, download: 'gv-samples.json' }).click();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 });
+// ---------- Vici Dialer ----------
+const VICI_DEFAULT = 'https://dm26.callengine.org/agc/vicidial.php';
+const viciMsg = (t, cls = '') => { $('viciMsg').textContent = t; $('viciMsg').className = `small ${cls}`; };
+async function loadVici() {
+  const st = await chrome.storage.local.get(['viciUrl', 'viciStatus', 'viciTest']);
+  if (document.activeElement !== $('viciUrl')) $('viciUrl').value = st.viciUrl || VICI_DEFAULT;
+  if (!$('viciMsg').dataset.busy) viciMsg(st.viciStatus ? `Status: ${st.viciStatus.text}` : '');
+  const t = st.viciTest;
+  $('viciSteps').replaceChildren(...(t ? t.steps : []).map((x) => {
+    const li = document.createElement('li');
+    li.textContent = `${x.ok ? '✅' : x.warn ? '⚠️' : '❌'} ${x.label}${x.fix ? ` — ${x.fix}` : ''}`;
+    return li;
+  }));
+}
+$('viciSave').addEventListener('click', async () => {
+  let u;
+  try { u = new URL($('viciUrl').value.trim() || VICI_DEFAULT); } catch { return viciMsg('That is not a web address. Copy it from the Vici login page.', 'err'); }
+  if (u.protocol !== 'https:') return viciMsg('The Vici address must start with https://', 'err');
+  const origin = `https://${u.hostname}/*`;
+  // Vici servers outside callengine.org need Chrome's permission once (asked here, on your click)
+  if (!/(^|\.)callengine\.org$/i.test(u.hostname)) {
+    const ok = await chrome.permissions.request({ origins: [origin] }).catch(() => false);
+    if (!ok) return viciMsg('Chrome permission was not given — Coco cannot see that Vici screen.', 'err');
+  }
+  await chrome.storage.local.set({ viciUrl: u.href });
+  await chrome.runtime.sendMessage({ type: 'vici-url-changed' });
+  viciMsg(`✓ Saved. Open ${u.hostname} and log in, then click Test Vici.`, 'ok');
+});
+$('viciOpen').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'open-vici' }));
+$('viciTest').addEventListener('click', async (e) => {
+  const b = e.currentTarget; b.disabled = true; $('viciMsg').dataset.busy = '1'; viciMsg('Testing…');
+  try {
+    const r = await chrome.runtime.sendMessage({ type: 'vici-test' });
+    viciMsg(r?.ok ? '✓ Vici is connected — make a test call and it will appear on the dashboard (Vici Dialer).' : 'Fix the first ❌ below, then test again.', r?.ok ? 'ok' : 'err');
+  } finally { b.disabled = false; delete $('viciMsg').dataset.busy; loadVici(); }
+});
+
 chrome.storage.onChanged.addListener(load);
+chrome.storage.onChanged.addListener(loadVici);
 load();
+loadVici();
 
 document.querySelectorAll('.cy').forEach((e) => { e.textContent = String(new Date().getFullYear()); });

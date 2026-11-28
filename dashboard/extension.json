@@ -1,12 +1,21 @@
 {
-  "version": "0.11.0",
-  "released": "2026-11-28T06:19:00.825Z",
+  "version": "0.12.0",
+  "released": "2026-11-28T06:57:40.473Z",
   "download": "/downloads/coco-voice-extension.zip",
-  "versioned": "/downloads/coco-voice-extension-0.11.0.zip",
-  "size": 61637,
-  "sha256": "615c4a9d45ab36062e1e028e680b63a4f786b4d9794292726db703494fd8a1d9",
+  "versioned": "/downloads/coco-voice-extension-0.12.0.zip",
+  "size": 65919,
+  "sha256": "e99c8e5c228f7df8f8e75c77d4d761b0b6c25be73991b776f587ed75b87dc564",
   "min_chrome": "116",
   "history": [
+    {
+      "version": "0.12.0",
+      "released": "2026-11-28T06:57:40.473Z",
+      "notes": [
+        "Vici card always in the side panel: live status (open / log in / ready / on call) with a one-click fix",
+        "Test Vici button checks every step and says how to fix it",
+        "Works on Vici screens that were already open (no reload) and on any Vici address (Settings → Vici Dialer)"
+      ]
+    },
     {
       "version": "0.11.0",
       "released": "2026-11-28T06:19:00.825Z",

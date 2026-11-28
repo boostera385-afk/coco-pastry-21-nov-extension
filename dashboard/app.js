@@ -859,7 +859,7 @@ window.addEventListener('message', (ev) => {
   } else if (d.type === 'dial-result') dialWaits.get(d.reqId)?.(d);
 });
 window.postMessage({ source: 'coco-dash', type: 'ping' }, location.origin);
-const dialHint = () => (!ext.present ? 'Install/enable the Coco extension in this browser to dial from here'
+const dialHint = () => (!ext.present ? 'Install the Coco extension (v0.12+) in this browser to dial from here'
   : !ext.connected ? 'Connect the Coco extension (paste the token) to dial'
     : !ext.viciOpen ? 'Open the Vici agent screen in this browser (logged in) to dial' : 'Dial this number on your Vici agent screen');
 function setDialBtn(b) { b.disabled = !ext.viciOpen; b.title = dialHint(); }
@@ -894,6 +894,15 @@ async function renderVici(view) {
       <div class="row" style="align-items:center"><input id="vdial" placeholder="Number to dial" style="max-width:170px" aria-label="Number to dial in Vici" inputmode="tel"><button class="btn" id="vdialBtn" data-dial>Dial in Vici</button>
         <input id="vsearch" placeholder="Number, name, status${isMgr() ? ' or transcript word' : ''}" style="max-width:280px" aria-label="Search Vici calls"><button class="btn dark" id="vcsv">Download (CSV)</button></div></div>
     <p class="small muted">Calls from the Vici agent screen, counted on their own — they are not part of the Google Voice numbers on Overview.</p>
+    <details class="card" ${t.calls ? '' : 'open'}><summary><b>How to connect Vici</b> <span class="small muted">(once per computer, about 1 minute)</span></summary>
+      <ol class="small" style="margin:8px 0 0;padding-left:20px;display:grid;gap:4px">
+        <li>Coco extension <b>v0.12.0 or newer</b> connected with the agent's token (side panel → <i>Update now</i> if it asks).</li>
+        <li>Open the Coco side panel → <b>Vici Dialer</b> card → <b>Open Vici</b>, and log in with your Vici user and phone as usual. Your computer's IP must be whitelisted on the Vici server.</li>
+        <li>Click <b>Test Vici</b>. Every line should show ✅ (⚠️ is a hint, not a blocker). Each ❌ says exactly what to do.</li>
+        <li>Make one call. It appears here within seconds; the recording and transcript follow after the call.</li>
+      </ol>
+      <p class="small muted">Different Vici address? Extension → Settings → Vici Dialer → paste the address of your Vici login page → Save. Click-to-dial needs <i>Agent API Access</i> on the Vici user (otherwise Coco uses the screen's own dial box).</p>
+    </details>
     <div class="kpis">
       ${kpi('Vici calls', n(t.calls), `${n(t.manual)} manual · ${n(t.auto)} auto · ${n(t.inbound)} inbound`, { hero: true, icon: ICON.callOut })}
       ${kpi('Connected', n(t.connected), `${pct(t.connected, t.calls)} of calls`, { icon: ICON.check })}
