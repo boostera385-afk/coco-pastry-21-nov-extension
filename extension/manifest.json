@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Coco Voice Tracker",
-  "version": "0.9.1",
-  "description": "Counts Google Voice outbound reach and inbound activity and syncs it to your team's Coco Voice dashboard.",
+  "version": "0.10.0",
+  "description": "Counts Google Voice and Vici Dialer activity (kept separate), records calls and syncs them to your team's Coco Voice dashboard.",
   "minimum_chrome_version": "116",
   "icons": {
     "16": "icons/icon-16.png",
@@ -21,6 +21,7 @@
   ],
   "host_permissions": [
     "https://voice.google.com/*",
+    "https://*.callengine.org/*",
     "https://yzcjawjncjvqgutpyejm.supabase.co/*",
     "https://*.google.com/*",
     "https://*.googleapis.com/*"
@@ -64,6 +65,28 @@
         "src/widget.js"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://*.callengine.org/*"
+      ],
+      "js": [
+        "src/vici/page.js",
+        "src/recorder.js"
+      ],
+      "world": "MAIN",
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "https://*.callengine.org/*"
+      ],
+      "js": [
+        "src/vici/bridge.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true
     }
   ],
   "side_panel": {

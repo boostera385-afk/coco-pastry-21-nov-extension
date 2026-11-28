@@ -10,6 +10,7 @@ const BATCH = 100;
 const MAX_SAMPLES = 60;        // sample recorder (Settings → Record samples)
 const TAB_STALE_MS = 11 * 60e3; // no heartbeat for this long = no Voice tab open
 const VOICE_URL = 'https://voice.google.com/';
+const VICI_TABS = 'https://*.callengine.org/*';   // Vici Dialer agent screen (kept separate from Google Voice)
 
 const get = (keys) => chrome.storage.local.get(keys);
 const set = (obj) => chrome.storage.local.set(obj);
@@ -107,6 +108,7 @@ chrome.runtime.onInstalled.addListener(async ({ reason }) => {
     await set({ needsVoiceReload: open.length > 0 });
   }
   injectIntoOpenVoiceTabs();
+  injectIntoOpenViciTabs();
 });
 chrome.runtime.onStartup.addListener(setup);
 
@@ -166,13 +168,36 @@ async function injectIntoOpenVoiceTabs() {
   }
 }
 
+async function injectIntoOpenViciTabs() {
+  for (const t of await chrome.tabs.query({ url: VICI_TABS }).catch(() => [])) {
+    try {
+      await chrome.scripting.executeScript({ target: { tabId: t.id, allFrames: true }, files: ['src/vici/page.js', 'src/recorder.js'], world: 'MAIN' });
+      await chrome.scripting.executeScript({ target: { tabId: t.id, allFrames: true }, files: ['src/vici/bridge.js'] });
+    } catch { /* not ready: scripts arrive on next load */ }
+  }
+}
+
 // ---------- messages from content script / panel / widget / options ----------
-chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
+chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   (async () => {
     switch (msg.type) {
+      case 'vici-event': await onViciEvent(msg.event); break;
+      case 'vici-call-state':
+        // tell every frame of that tab (the browser phone may be an iframe) to start/stop this call's recording
+        if (sender.tab?.id >= 0) chrome.tabs.sendMessage(sender.tab.id, { type: 'vici-rec-gate', on: msg.on, uid: msg.uid }).catch(() => {});
+        break;
+      case 'vici-sample': await onViciSample(msg.sample); break;
+      case 'vici-diag': await set({ viciDiag: msg.diag }); break;
+      case 'vici-rec-diag': {
+        const { viciRecDiag = {} } = await get('viciRecDiag');
+        viciRecDiag[String(sender.frameId ?? 0)] = { ...msg.diag, url: (sender.url || '').split('?')[0].slice(0, 80), at: Date.now() };
+        await set({ viciRecDiag });
+        break;
+      }
+      case 'vici-page': await set({ viciSeenAt: Date.now(), viciHeartbeatPending: true }); await refreshStatus(); break;
       case 'gv-capture': await serial(() => onCapture(msg)); break;
       case 'heartbeat': await set({ lastHeartbeat: Date.now(), heartbeatPending: true }); await refreshStatus(); break;
-      case 'sync-now': return reply(await sync());
+      case 'sync-now': await syncVici(); return reply(await sync());
       case 'set-paused': await setPaused(!!msg.paused); break;
       case 'connect': return reply(await connect(msg.token));
       case 'disconnect':
@@ -342,10 +367,12 @@ async function refreshStatus() {
   const summary = fresh ? st.serverSummary.today : summarize(Object.values(st.events || {}), today, today, tz);
 
   const voiceOpen = (await chrome.tabs.query({ url: 'https://voice.google.com/*' }).catch(() => [])).length > 0;
+  const viciOpen = (await chrome.tabs.query({ url: VICI_TABS }).catch(() => [])).length > 0;
   let level = 'ok';
   let text = 'Tracking';
   if (!st.agentToken) { level = 'bad'; text = 'Not connected — paste your token in Settings'; }
   else if (st.paused) { level = 'paused'; text = 'Paused'; }
+  else if (!voiceOpen && viciOpen) { text = 'Tracking Vici Dialer'; }
   else if (!voiceOpen) { level = 'warn'; text = 'Google Voice is not open — open it to track'; }
   else if (!st.lastHeartbeat || Date.now() - st.lastHeartbeat > TAB_STALE_MS) { level = 'warn'; text = 'Open Google Voice to track'; }
   else if (st.needsVoiceReload) { level = 'warn'; text = 'Reload Google Voice to finish the update'; }
@@ -358,13 +385,13 @@ async function refreshStatus() {
   else if (st.lastSyncError) { level = 'bad'; text = 'Sync error — retrying'; }
   else if ((st.queue || []).length) { level = 'warn'; text = `${st.queue.length} waiting to sync`; }
 
-  await set({ status: { level, text, at: Date.now(), voiceOpen }, summaryToday: summary });
-  if (!voiceOpen) { const { recState } = await get('recState'); if (recState?.on) await set({ recState: { on: false, at: Date.now() } }); }
+  await set({ status: { level, text, at: Date.now(), voiceOpen, viciOpen }, summaryToday: summary });
+  if (!voiceOpen && !viciOpen) { const { recState } = await get('recState'); if (recState?.on) await set({ recState: { on: false, at: Date.now() } }); }
 
   const colors = { ok: '#00843d', warn: '#ffba00', bad: '#cc3433', paused: '#777777' };
   await chrome.action.setBadgeBackgroundColor({ color: colors[level] });
   await chrome.action.setBadgeTextColor?.({ color: level === 'warn' ? '#000000' : '#ffffff' });
-  const off = st.agentToken && !st.paused && !voiceOpen;
+  const off = st.agentToken && !st.paused && !voiceOpen && !viciOpen;
   await chrome.action.setBadgeText({ text: level === 'paused' ? 'II' : level === 'bad' ? '!' : off ? 'OFF' : String(summary.outboundTotal || '') });
   await chrome.action.setTitle({ title: off
     ? 'Coco Voice — Google Voice is not open. Click, press Alt+Shift+V, or right-click → Open Google Voice'
@@ -379,6 +406,7 @@ chrome.storage.onChanged.addListener((c, area) => {
 chrome.alarms.onAlarm.addListener(async (a) => {
   if (a.name === 'update-check') { checkForUpdate(); return; }
   if (a.name !== 'sync') return;
+  await syncVici();
   await sync();
   await refreshStatus();
 });
@@ -453,12 +481,14 @@ async function onRecordingFile(msg) {
   if (!/^[0-9a-f-]{36}$/.test(msg.id || '') || typeof msg.b64 !== 'string') return;
   const type = String(msg.mime || 'audio/webm').split(';')[0];
   await putRecording({ id: msg.id, startedAt: msg.startedAt, durationSec: msg.durationSec | 0, mime: String(msg.mime || 'audio/webm'),
+    source: msg.source === 'vici' ? 'vici' : 'gv', tag: typeof msg.tag === 'string' ? msg.tag.slice(0, 80) : null,
     blob: b64ToBlob(msg.b64, type),
     // one mono file per speaker: the server transcribes each side separately ("Agent: … / Caller: …")
     parts: { agent: msg.agentB64 ? b64ToBlob(msg.agentB64, type) : null, caller: msg.callerB64 ? b64ToBlob(msg.callerB64, type) : null },
     sent: {}, tries: 0, savedAt: Date.now() });
   await set({ heartbeatPending: true });
   // the call event usually arrives a few seconds later; upload after the next sync so it can be matched right away
+  if (msg.source === 'vici') { clearTimeout(viciSoon); viciSoon = setTimeout(syncVici, 4000); }
   clearTimeout(syncSoon); syncSoon = setTimeout(sync, 5000);
 }
 
@@ -478,7 +508,8 @@ async function uploadRecordings() {
         for (const part of ['mix', 'agent', 'caller']) {
           const blob = part === 'mix' ? r.blob : r.parts?.[part];
           if (!blob || sent[part]) continue;
-          const q = new URLSearchParams({ rec: r.id, start: r.startedAt, dur: String(r.durationSec), ...(part === 'mix' ? {} : { part }) });
+          const q = new URLSearchParams({ rec: r.id, start: r.startedAt, dur: String(r.durationSec), ...(part === 'mix' ? {} : { part }),
+            ...(r.source === 'vici' ? { source: 'vici', ...(r.tag ? { vuid: r.tag } : {}) } : {}) });
           const res = await fetch(`${INGEST_URL}?${q}`, {
             method: 'POST', headers: { 'x-agent-token': agentToken, 'Content-Type': blob.type || 'audio/webm' }, body: blob,
             signal: AbortSignal.timeout(180000),
@@ -567,5 +598,70 @@ async function sync() {
     return { ok: false, error: message };
   } finally {
     syncing = 0;
+  }
+}
+
+// ---------- Vici Dialer (separate queue, separate endpoint, separate table: never mixed with Google Voice) ----------
+let viciSoon = null;
+async function onViciEvent(e) {
+  if (!e || typeof e.vici_uid !== 'string') return;
+  await serial(async () => {
+    const st = await get(['agentToken', 'paused', 'viciQueue', 'viciUser']);
+    if (!st.agentToken || st.paused) return; // not connected / paused: capture nothing
+    const q = st.viciQueue || [];
+    q.push({ ...e, seen_at: new Date().toISOString() });
+    await set({ viciQueue: q.slice(-2000), ...(e.vici_user && e.vici_user !== st.viciUser ? { viciUser: e.vici_user } : {}) });
+  });
+  clearTimeout(viciSoon); viciSoon = setTimeout(syncVici, e.stage === 'start' ? 1500 : 3000);
+}
+
+/** Last redacted request/response per Vici action (no passwords, phone numbers masked): checks the map remotely. */
+async function onViciSample(x) {
+  if (!x?.key) return;
+  const { viciSamples = {} } = await get('viciSamples');
+  viciSamples[x.key] = x;
+  const keys = Object.keys(viciSamples);
+  if (keys.length > 40) delete viciSamples[keys.sort((a, b) => viciSamples[a].at - viciSamples[b].at)[0]];
+  await set({ viciSamples });
+}
+
+let viciSyncing = 0;
+async function syncVici() {
+  if (viciSyncing && Date.now() - viciSyncing < 2 * 60e3) return { ok: false, error: 'busy' };
+  viciSyncing = Date.now();
+  try {
+    const st = await get(['agentToken', 'paused', 'viciQueue', 'viciHeartbeatPending', 'viciUser', 'viciDiag', 'viciRecDiag', 'viciSamples', 'viciBackoffUntil']);
+    if (!st.agentToken) return { ok: false, error: 'Not connected' };
+    if (st.viciBackoffUntil && Date.now() < st.viciBackoffUntil) return { ok: false, error: 'Waiting to retry' };
+    const batch = (st.viciQueue || []).slice(0, 200);
+    if (!batch.length && !st.viciHeartbeatPending) return { ok: true, sent: 0 };
+    const res = await fetch(`${INGEST_URL}?vici=1`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-agent-token': st.agentToken },
+      body: JSON.stringify({
+        vici_user: st.viciUser || null, events: batch,
+        health: { at: new Date().toISOString(), extensionVersion: chrome.runtime.getManifest().version, paused: !!st.paused,
+          page: st.viciDiag || null, recorder: st.viciRecDiag || null, samples: Object.values(st.viciSamples || {}).slice(-25) },
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
+    if (res.status === 401 || res.status === 403) throw new Error(res.status === 401 ? 'Token rejected' : 'Agent deactivated');
+    if (!res.ok) throw new Error(`Server error ${res.status}`);
+    const out = await res.json();
+    await serial(async () => {
+      const { viciQueue = [] } = await get('viciQueue');
+      await set({ viciQueue: viciQueue.slice(batch.length), viciHeartbeatPending: false, viciSummary: out.today || null,
+        viciSyncAt: Date.now(), viciSyncError: null, viciFailures: 0, viciBackoffUntil: 0 });
+    });
+    if (typeof out.config?.record_calls === 'boolean') await set({ recordCalls: out.config.record_calls });
+    uploadRecordings();
+    if (batch.length === 200) setTimeout(syncVici, 500);
+    return { ok: true, sent: batch.length };
+  } catch (e) {
+    const { viciFailures = 0 } = await get('viciFailures');
+    await set({ viciSyncError: String(e.message || e).slice(0, 120), viciFailures: viciFailures + 1,
+      viciBackoffUntil: Date.now() + Math.min(30 * 60e3, 30e3 * 2 ** viciFailures) });
+    return { ok: false, error: String(e.message || e) };
+  } finally {
+    viciSyncing = 0;
   }
 }

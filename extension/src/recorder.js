@@ -1,4 +1,4 @@
-// Runs in the PAGE (MAIN world) on voice.google.com at document_start.
+// Runs in the PAGE (MAIN world) on voice.google.com and the Vici Dialer pages at document_start.
 // Plan B call recording: records Google Voice browser calls itself, so no Workspace admin setting is needed.
 // - Observes the page's own WebRTC connection (never changes the call): caller audio = remote track,
 //   agent audio = the microphone track the page sends.
@@ -7,6 +7,8 @@
 //   speaker (24 kbps each) so the server can transcribe each side separately ("Agent: … / Caller: …").
 // - Only records while the content script says recording is enabled (connected, not paused, admin switch on).
 // - The finished file is posted to the content script, which hands it to the service worker for upload.
+// - Vici Dialer: the browser phone stays connected for the whole login (calls are bridged into it), so there a
+//   file starts/stops on Vici's own call events ("rec-gate" from the Vici bridge), one file per customer call.
 (() => {
   const VERSION = 2;
   // one recorder per page: a page hooked by an older copy keeps it until Voice is reloaded (never record twice)
@@ -20,13 +22,27 @@
   const BITRATE = 32000;
   const PART_BITRATE = 24000;
   let enabled = false;               // set by the content script (coco-ext / rec-config)
+  // Off Google (Vici): record only while the dialer says a customer call is live. Safe default before the bridge speaks.
+  let gated = !/(^|\.)google\.com$/.test(location.hostname);
+  let callOn = false;
+  let gateTag = null;                // Vici call id, attached to the file
   const post = (msg) => window.postMessage({ source: 'coco-rec', ...msg }, window.location.origin);
   const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16)));
   const diag = { pcs: 0, sessions: 0, files: 0, errors: 0, lastError: null };
   const report = () => post({ type: 'diag', diag: { ...diag, enabled } });
 
   window.addEventListener('message', (ev) => {
-    if (ev.source !== window || ev.data?.source !== 'coco-ext' || ev.data.type !== 'rec-config') return;
+    if (ev.source !== window || ev.data?.source !== 'coco-ext') return;
+    if (ev.data.type === 'rec-gate') {
+      gated = true;
+      const was = callOn;
+      callOn = !!ev.data.on;
+      if (callOn) gateTag = ev.data.uid || gateTag;
+      if (was && !callOn) sessions.forEach((s) => s.stop());       // customer hung up: finish this call's file
+      if (!was && callOn) sessions.forEach((s) => s.maybeStart());
+      return;
+    }
+    if (ev.data.type !== 'rec-config') return;
     const was = enabled;
     enabled = !!ev.data.enabled;
     if (was && !enabled) sessions.forEach((s) => s.stop()); // switched off mid-call: keep what was recorded
@@ -82,7 +98,7 @@
     }
 
     maybeStart() {
-      if (this.cur || this.ctx || !enabled) return;
+      if (this.cur || this.ctx || !enabled || (gated && !callOn)) return;
       try { this.pc.getReceivers().forEach((r) => { if (r.track?.kind === 'audio' && r.track.readyState === 'live') this.addRemoteSilently(r.track); }); } catch { /* ignore */ }
       const s = this.pc.connectionState || this.pc.iceConnectionState;
       if (!this.remote.size || !(s === 'connected' || s === 'completed')) return;
@@ -122,7 +138,7 @@
     /** Start a new file on the same audio graph. Each file keeps its own state (id, start, chunks). */
     segment() {
       const opts = (bps) => ({ ...(this.mime ? { mimeType: this.mime } : {}), audioBitsPerSecond: bps });
-      const rec = { id: uuid(), startedAt: Date.now(), mime: this.mime || 'audio/webm', open: 0, tracks: {} };
+      const rec = { id: uuid(), startedAt: Date.now(), mime: this.mime || 'audio/webm', open: 0, tracks: {}, tag: gated ? gateTag : null };
       const add = (name, stream, bps) => {
         const mr = new MediaRecorder(stream, opts(bps));
         const t = { mr, chunks: [] };
@@ -184,7 +200,7 @@
       const mix = blob('mix');
       if (durationSec < MIN_SEC || !mix) return;
       diag.files++;
-      post({ type: 'recording', id: rec.id, startedAt: new Date(rec.startedAt).toISOString(), durationSec, mime: rec.mime, blob: mix, agent: blob('agent'), caller: blob('caller') });
+      post({ type: 'recording', id: rec.id, tag: rec.tag, startedAt: new Date(rec.startedAt).toISOString(), durationSec, mime: rec.mime, blob: mix, agent: blob('agent'), caller: blob('caller') });
       report();
     }
 

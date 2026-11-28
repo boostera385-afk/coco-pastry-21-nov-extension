@@ -1,0 +1,163 @@
+// Runs in the PAGE (MAIN world) on the Vici Dialer agent screen (dm26.callengine.org/agc/vicidial.php) at document_start.
+// Observes only, never changes a request. Two signals, whichever the agent screen gives:
+//   1. the screen's own state: VD_live_customer_call (customer on the line) + the lead form (lead_id, uniqueid, phone…)
+//   2. its AJAX calls: manDiaLlogCaLL stage=start/end, manDiaLonly / manDiaLnextCaLL (manual dial), updateDISPO (status)
+// Emits one event per change of a call (start, end, disposition) to the bridge; the server merges them per call.
+// Passwords (pass=, phone_pass=…) are removed before anything leaves this page.
+(() => {
+  if (window.__cocoVici) return;
+  window.__cocoVici = 1;
+  const top = window === window.top;
+  const post = (msg) => window.postMessage({ source: 'coco-vici', ...msg }, window.location.origin);
+  const SECRET = /^(pass|phone_pass|password|pw|vd_pass|sip_pass|api_pass)$/i;
+
+  const params = (s) => { try { return new URLSearchParams(typeof s === 'string' ? s : ''); } catch { return new URLSearchParams(); } };
+  const clean = (u, body) => {
+    const p = new URLSearchParams();
+    for (const src of [params(String(u).split('?')[1] || ''), params(body)]) for (const [k, v] of src) if (!SECRET.test(k)) p.set(k, v);
+    return p;
+  };
+  const redact = (t) => String(t ?? '').replace(/\d{7,}/g, (d) => `#${d.length}#`).slice(0, 600);
+
+  // ---------- call state ----------
+  const S = { live: false, call: null, last: null, xhrLive: null, dialed: null, actions: {}, globals: null };
+  const g = (name) => { try { return window[name]; } catch { return undefined; } };
+  const field = (name) => {
+    try {
+      const f = document.forms?.vicidial_form?.elements?.[name] || document.getElementById(name);
+      const v = f && 'value' in f ? String(f.value).trim() : '';
+      return v || null;
+    } catch { return null; }
+  };
+  const phoneOf = (code, num) => {
+    const d = String(num || '').replace(/\D/g, '');
+    if (!d) return null;
+    const c = String(code || '').replace(/\D/g, '');
+    if (d.length === 10 && (!c || c === '1')) return `+1${d}`;
+    if (d.length === 11 && d[0] === '1') return `+${d}`;
+    return c && !d.startsWith(c) ? `+${c}${d}` : d.length > 10 ? `+${d}` : d;
+  };
+  const viciUser = () => {
+    const u = g('user') ?? field('user');
+    return typeof u === 'string' && /^[\w.-]{1,30}$/.test(u) ? u : null;
+  };
+  /** Everything the screen knows about the current lead right now. */
+  const snapshot = () => {
+    const first = field('first_name'); const lastN = field('last_name');
+    const inOut = String(g('inOUT') ?? '').toUpperCase();
+    const group = g('VDCL_group_id');
+    const level = Number(g('auto_dial_level') ?? NaN);
+    const inbound = inOut === 'IN' || (typeof group === 'string' && group && group !== String(g('campaign') ?? ''));
+    return {
+      lead_id: field('lead_id') || (S.xhrLive?.lead_id ?? null),
+      uniqueid: field('uniqueid') || (S.xhrLive?.uniqueid ?? null),
+      phone: phoneOf(field('phone_code'), field('phone_number')) || S.xhrLive?.phone || S.dialed?.phone || null,
+      contact_name: [first, lastN].filter(Boolean).join(' ') || null,
+      campaign: (typeof g('campaign') === 'string' && g('campaign')) || field('campaign') || null,
+      direction: inbound ? 'inbound' : 'outbound',
+      dial_type: inbound ? 'inbound' : (S.dialed && Date.now() - S.dialed.at < 120e3) ? 'manual' : level > 0 ? 'auto' : level === 0 ? 'manual' : 'unknown',
+      vici_user: viciUser(),
+    };
+  };
+  const emit = (stage, c, extra = {}) => post({ type: 'event', event: {
+    stage, vici_uid: c.uid, ...c.info, started_at: new Date(c.startedAt).toISOString(),
+    ended_at: c.endedAt ? new Date(c.endedAt).toISOString() : null,
+    talk_sec: c.endedAt ? Math.round((c.endedAt - c.startedAt) / 1000) : 0, disposition: c.disposition || null, ...extra,
+  } });
+
+  function startCall() {
+    const info = snapshot();
+    const at = Date.now();
+    const uid = info.uniqueid || (info.lead_id ? `lead:${info.lead_id}:${at}` : `t:${at}`);
+    S.call = { uid, startedAt: at, info };
+    emit('start', S.call);
+    post({ type: 'call-state', on: true, uid });
+  }
+  function endCall() {
+    const c = S.call;
+    if (!c) return;
+    c.endedAt = Date.now();
+    const info = snapshot();
+    for (const [k, v] of Object.entries(info)) if (v && !c.info[k]) c.info[k] = v; // fill what arrived during the call
+    emit('end', c);
+    post({ type: 'call-state', on: false, uid: c.uid });
+    S.last = c; S.call = null; S.xhrLive = null; S.dialed = null;
+  }
+
+  function tick() {
+    if (!top) return;
+    const flag = g('VD_live_customer_call');
+    const live = flag !== undefined ? Number(flag) === 1 || flag === true : !!S.xhrLive;
+    if (live && !S.live) startCall();
+    else if (!live && S.live) endCall();
+    else if (live && S.call) { // fill lead details that load a moment after the call starts
+      const info = snapshot(); let changed = false;
+      for (const [k, v] of Object.entries(info)) if (v && !S.call.info[k]) { S.call.info[k] = v; changed = true; }
+      if (changed) emit('update', S.call);
+    }
+    S.live = live;
+    if (!S.globals) {
+      S.globals = Object.fromEntries(['VD_live_customer_call', 'inOUT', 'VDCL_group_id', 'auto_dial_level', 'campaign', 'user', 'AutoDialReady']
+        .map((k) => [k, g(k) === undefined ? 'missing' : typeof g(k)]));
+      S.globals.form = !!document.forms?.vicidial_form;
+    }
+  }
+  setInterval(tick, 1000);
+
+  // ---------- AJAX ----------
+  function onAjax(url, body, text) {
+    const u = String(url);
+    if (!/\.php/i.test(u)) return;
+    const p = clean(u, body);
+    const file = (u.split('?')[0].match(/([\w-]+)\.php/i) || [])[1] || 'php';
+    const action = p.get('ACTION') || p.get('action') || p.get('function') || '';
+    const key = `${file}:${action}`.slice(0, 60);
+    S.actions[key] = (S.actions[key] || 0) + 1;
+    // redacted sample (no passwords, phone-like numbers masked) for checking the map from the dashboard
+    if (file !== 'conf_exten_check' || S.actions[key] <= 2) post({ type: 'sample', sample: { key, req: redact(p.toString()), res: redact(text), at: Date.now() } });
+    if (!top) return;
+    if (action === 'manDiaLonly' || action === 'manDiaLnextCaLL') {
+      S.dialed = { at: Date.now(), phone: phoneOf(p.get('phone_code'), p.get('phone_number')) };
+    } else if (action === 'manDiaLlogCaLL') {
+      const stage = (p.get('stage') || '').toLowerCase();
+      if (stage === 'start') S.xhrLive = { lead_id: p.get('lead_id'), uniqueid: p.get('uniqueid'), phone: phoneOf(p.get('phone_code'), p.get('phone_number')) };
+      if (stage === 'end') { if (S.call) endCall(); S.xhrLive = null; }
+    } else if (action === 'updateDISPO') {
+      const dispo = (p.get('dispo_choice') || p.get('status') || '').trim().slice(0, 30);
+      const c = S.call || S.last;
+      if (dispo && c && Date.now() - (c.endedAt || c.startedAt) < 30 * 60e3) { c.disposition = dispo; emit('dispo', c); }
+    }
+  }
+
+  const XO = XMLHttpRequest.prototype.open;
+  const XS = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open = function (m, url) { try { this.__cocoUrl = url; } catch { /* ignore */ } return XO.apply(this, arguments); };
+  XMLHttpRequest.prototype.send = function (body) {
+    try {
+      const url = this.__cocoUrl;
+      if (url && /\.php/i.test(String(url))) {
+        const b = typeof body === 'string' ? body : '';
+        this.addEventListener('load', () => { try { onAjax(url, b, this.responseType === '' || this.responseType === 'text' ? this.responseText : ''); } catch { /* never break the page */ } });
+      }
+    } catch { /* ignore */ }
+    return XS.apply(this, arguments);
+  };
+  const F = window.fetch;
+  if (F) {
+    window.fetch = function (input, init) {
+      const p = F.apply(this, arguments);
+      try {
+        const url = typeof input === 'string' ? input : input?.url;
+        if (url && /\.php/i.test(url)) {
+          const b = typeof init?.body === 'string' ? init.body : '';
+          p.then((r) => r.clone().text()).then((t) => onAjax(url, b, t)).catch(() => {});
+        }
+      } catch { /* ignore */ }
+      return p;
+    };
+  }
+
+  // diagnostics for the dashboard (counts + which screen variables exist; no lead data)
+  if (top) setInterval(() => post({ type: 'diag', diag: { actions: S.actions, globals: S.globals, live: S.live, user: viciUser(), page: location.pathname.slice(0, 60) } }), 30e3);
+  window.addEventListener('pagehide', () => { if (S.call) endCall(); });
+})();

@@ -68,6 +68,9 @@ Deno.serve(async (req) => {
     if (!bytes.length || bytes.length > 25 * 1024 * 1024) return json({ error: 'empty or too large (25 MB max)' }, 413);
     const part = params.get('part');
     if (part !== null && part !== 'agent' && part !== 'caller') return json({ error: 'bad part' }, 400);
+    // Vici Dialer recordings stay separate from Google Voice (own matcher, never linked to a Google Voice call)
+    const source = params.get('source') === 'vici' ? 'vici' : 'gv';
+    const viciUid = source === 'vici' ? (params.get('vuid') ?? '').slice(0, 80) || null : null;
     const path = `${agent.id}/rec-${rec}${part ? `-${part}` : ''}.${audioExt(type)}`;
     const up = await supabase.storage.from('recordings').upload(path, bytes, { contentType: type, upsert: true });
     if (up.error) return json({ error: `storage: ${up.error.message}` }, 500);
@@ -79,9 +82,9 @@ Deno.serve(async (req) => {
       return json({ ok: true, path });
     }
     const ins = await supabase.from('call_recordings').upsert({ id: rec, agent_id: agent.id, started_at: new Date(start).toISOString(),
-      duration_sec: dur, bytes: bytes.length, path }, { onConflict: 'id' });
+      duration_sec: dur, bytes: bytes.length, path, source, vici_uid: viciUid }, { onConflict: 'id' });
     if (ins.error) return json({ error: ins.error.message }, 500);
-    const { data: matched } = await supabase.rpc('match_call_recordings', { p_agent: agent.id });
+    const { data: matched } = await supabase.rpc(source === 'vici' ? 'match_vici_recordings' : 'match_call_recordings', { p_agent: agent.id });
     return json({ ok: true, path, matched: matched ?? 0 });
   }
 
@@ -103,6 +106,21 @@ Deno.serve(async (req) => {
     if (attErr) return json({ error: attErr.message }, 500);
     kickTranscription(); // voicemail / Google call recording without Google's own transcript
     return json({ ok: true, path, attached: rows });
+  }
+
+  // ---- Vici Dialer calls: POST ?vici=1  { vici_user, events, health }  (separate table, never mixed with Google Voice) ----
+  if (params.get('vici') !== null) {
+    let vb: { vici_user?: string; events?: unknown[]; health?: unknown };
+    try { vb = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
+    const { data, error } = await supabase.rpc('ingest_vici', {
+      p_agent: agent.id,
+      p_user: typeof vb.vici_user === 'string' ? vb.vici_user : null,
+      p_events: Array.isArray(vb.events) ? vb.events.slice(0, 500) : [],
+      p_health: vb.health ?? null,
+    });
+    if (error) return json({ error: error.message }, 500);
+    const recordCalls = agent.record_calls !== false && (await saveRecordings());
+    return json({ ...data, config: { record_calls: recordCalls }, agent: { name: agent.name } });
   }
 
   let body: {

@@ -41,6 +41,15 @@ async function render() {
   $('openVoiceBox').hidden = !st.agentToken || st.paused || !(st.status?.voiceOpen === false || /Open Google Voice/i.test(st.status?.text || ''));
   $('goVoice').classList.toggle('attn', st.status?.voiceOpen === false && !!st.agentToken && !st.paused);
   $('setup').hidden = !!st.agentToken;
+  // Vici Dialer: separate numbers (never added to the Google Voice tiles above)
+  const vs = st.viciSummary;
+  $('viciBox').hidden = !st.agentToken || !(st.viciSeenAt || vs?.calls);
+  if (!$('viciBox').hidden) {
+    $('viciCalls').textContent = vs?.calls ?? 0;
+    const talk = Math.round((vs?.talkSec || 0) / 60);
+    $('viciSub').textContent = `${vs?.connected ?? 0} connected · ${vs?.conversations ?? 0} conv. · ${talk} min talk${st.viciUser ? ` · user ${st.viciUser}` : ''}`
+      + `${(st.viciQueue || []).length ? ` · ${st.viciQueue.length} waiting` : ''}${st.viciSyncError ? ` · ${st.viciSyncError}` : ''}`;
+  }
   const up = st.latestExtension;
   const mine = chrome.runtime.getManifest().version;
   const showUp = !!up?.updateAvailable && up.version !== mine;

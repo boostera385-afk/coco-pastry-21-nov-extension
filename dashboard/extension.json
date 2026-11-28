@@ -1,12 +1,20 @@
 {
-  "version": "0.9.1",
-  "released": "2026-11-24T12:07:50.253Z",
+  "version": "0.10.0",
+  "released": "2026-11-28T06:08:34.043Z",
   "download": "/downloads/coco-voice-extension.zip",
-  "versioned": "/downloads/coco-voice-extension-0.9.1.zip",
-  "size": 51932,
-  "sha256": "c39ee970ac1eaa89afeb63b9d857d6f84f0d44a10dac0531aae8e37a4ba8b6e0",
+  "versioned": "/downloads/coco-voice-extension-0.10.0.zip",
+  "size": 58899,
+  "sha256": "bf7eac61b7f07187e1ea3a0d2bf8780071a98c63d76686584f60f8df15de44a5",
   "min_chrome": "116",
   "history": [
+    {
+      "version": "0.10.0",
+      "released": "2026-11-28T06:08:34.043Z",
+      "notes": [
+        "Vici Dialer: calls on the Vici agent screen are tracked and recorded (one file per customer call), kept separate from Google Voice",
+        "Side panel shows Vici calls for today in their own card"
+      ]
+    },
     {
       "version": "0.9.1",
       "released": "2026-11-24T12:07:50.253Z",

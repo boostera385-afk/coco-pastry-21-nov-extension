@@ -206,7 +206,7 @@ async function boot() {
     + state.agents.map((a) => `<option value="${a.id}">${esc(a.name)}${a.active ? '' : ' (inactive)'}</option>`).join('');
   $('#agentFilter').hidden = !isMgr();
 
-  const links = [['overview', 'Overview'], ...(isMgr() ? [['contacts', 'Contacts'], ['conversations', 'Conversations'], ['analysis', 'Analysis'], ['recordings', 'Recordings'], ['settings', 'Settings']] : []), ['extension', 'Extension'], ['account', 'Account']];
+  const links = [['overview', 'Overview'], ['vici', 'Vici Dialer'], ...(isMgr() ? [['contacts', 'Contacts'], ['conversations', 'Conversations'], ['analysis', 'Analysis'], ['recordings', 'Recordings'], ['settings', 'Settings']] : []), ['extension', 'Extension'], ['account', 'Account']];
   $('#navLinks').innerHTML = links.map(([k, l]) => `<a href="#/${k}" data-k="${k}">${l}</a>`).join('');
   route();
   renderUpdateBanner().catch(() => {});
@@ -347,7 +347,7 @@ function saveRangePref() {
 let liveStamp = null;
 let liveBusy = false;
 let lastRender = 0;
-const LIVE_PAGES = ['overview', 'contacts', 'conversations', 'analysis', 'recordings'];
+const LIVE_PAGES = ['overview', 'vici', 'contacts', 'conversations', 'analysis', 'recordings'];
 async function liveTick() {
   if (liveBusy || document.hidden || $('#app').hidden || !state.role) return;
   const page = location.hash.split('/')[1] || 'overview';
@@ -402,6 +402,7 @@ async function route(opts = {}) {
     else if (page === 'analysis' && isMgr()) await renderAnalysis(view);
     else if (page === 'recordings' && isMgr()) await renderRecordings(view);
     else if (page === 'settings' && isMgr()) await renderSettings(view);
+    else if (page === 'vici') await renderVici(view);
     else if (page === 'account') await renderAccount(view);
     else if (page === 'extension') await renderExtension(view);
     else await renderOverview(view);
@@ -843,6 +844,59 @@ async function renderContacts(view) {
   await load();
 }
 
+// ---------- Vici Dialer: its own numbers, never mixed with Google Voice ----------
+const DIAL_TYPE = { manual: 'manual dial', auto: 'auto dial', inbound: 'inbound', unknown: '—' };
+async function renderVici(view) {
+  const agent = isMgr() ? state.agent || null : state.agentId;
+  const args = { ...rangeArgs(), p_agent: agent };
+  const [team, dispos] = await Promise.all([rpc('vici_summary', args), rpc('vici_dispositions', args)]);
+  const t = ['calls', 'manual', 'auto', 'inbound', 'connected', 'conversations', 'voicemails', 'talk_sec', 'recorded']
+    .reduce((o, k) => ({ ...o, [k]: team.reduce((s, r) => s + Number(r[k] || 0), 0) }), {});
+  view.innerHTML = `
+    <div class="section-title"><h2>Vici Dialer</h2>
+      <div class="row" style="align-items:center"><input id="vsearch" placeholder="Number, name, status${isMgr() ? ' or transcript word' : ''}" style="max-width:280px" aria-label="Search Vici calls"><button class="btn dark" id="vcsv">Download (CSV)</button></div></div>
+    <p class="small muted">Calls from the Vici agent screen, counted on their own — they are not part of the Google Voice numbers on Overview.</p>
+    <div class="kpis">
+      ${kpi('Vici calls', n(t.calls), `${n(t.manual)} manual · ${n(t.auto)} auto · ${n(t.inbound)} inbound`, { hero: true, icon: ICON.callOut })}
+      ${kpi('Connected', n(t.connected), `${pct(t.connected, t.calls)} of calls`, { icon: ICON.check })}
+      ${kpi('Conversations', n(t.conversations), `${n(t.voicemails)} voicemail / phone menu`, { tone: 'g', icon: ICON.talk })}
+      ${kpi('Talk time', mins(t.talk_sec / 60), `${n(t.recorded)} recorded`, { tone: 'g', icon: ICON.clock })}
+    </div>
+    <div class="card"><h3>Agents</h3><div class="table-wrap"><table>
+      <thead><tr><th>Agent</th><th>Vici user</th><th class="num">Calls</th><th class="num">Manual</th><th class="num">Auto</th><th class="num">Inbound</th><th class="num">Connected</th><th class="num">Conversations</th><th class="num">Talk</th><th>First / last call</th><th>Vici screen seen</th></tr></thead>
+      <tbody>${team.map((r) => `<tr><td><b>${esc(r.agent_name)}</b></td><td>${esc(r.vici_user || '—')}</td><td class="num"><b>${n(r.calls)}</b></td>
+        <td class="num">${n(r.manual)}</td><td class="num">${n(r.auto)}</td><td class="num">${n(r.inbound)}</td><td class="num">${n(r.connected)}</td>
+        <td class="num">${n(r.conversations)}</td><td class="num">${mins(r.talk_sec / 60)}</td>
+        <td class="small">${r.first_call_at ? `${fmtTime(r.first_call_at)} – ${fmtTime(r.last_call_at)}` : '—'}</td><td class="small">${ago(r.vici_heartbeat_at)}</td></tr>`).join('')
+        || '<tr><td colspan="11" class="empty">No Vici activity yet — agents open the Vici agent screen in Chrome with the Coco extension connected.</td></tr>'}</tbody></table></div></div>
+    <div class="card"><h3>Dispositions</h3><div class="row" style="flex-wrap:wrap;gap:8px">${dispos.map((d) => `<span class="badge" title="${mins(d.talk_sec / 60)} talk">${esc(d.disposition)} · ${n(d.calls)}</span>`).join('') || '<span class="small muted">None in this period</span>'}</div></div>
+    <div class="card"><h3>Calls</h3><div class="table-wrap" id="vtable"><div class="empty">Loading…</div></div></div>`;
+  let rows = [];
+  const load = async () => {
+    rows = await rpc('vici_calls_list', { ...args, p_search: $('#vsearch').value.trim() || null, p_limit: 500 });
+    const paths = [...new Set(rows.map((r) => r.recording_path).filter(Boolean))];
+    const signed = paths.length ? Object.fromEntries((((await sb.storage.from('recordings').createSignedUrls(paths, 3600)).data) || []).filter((x) => x.signedUrl).map((x) => [x.path, x.signedUrl])) : {};
+    $('#vtable').innerHTML = `<table>
+      <thead><tr><th>When</th><th>Agent</th><th>Contact</th><th>Type</th><th>Status</th><th class="num">Talk</th><th>Recording &amp; transcript</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr>
+        <td style="white-space:nowrap">${fmtTime(r.started_at)}</td><td>${esc(r.agent_name)}</td>
+        <td><b>${esc(r.contact_name || r.phone || '—')}</b>${r.contact_name && r.phone ? `<div class="small muted">${esc(r.phone)}</div>` : ''}${r.campaign ? `<div class="small muted">${esc(r.campaign)}${r.lead_id ? ` · lead ${esc(r.lead_id)}` : ''}</div>` : ''}</td>
+        <td class="small">${esc(DIAL_TYPE[r.dial_type] || r.dial_type || '—')}</td>
+        <td>${r.disposition ? `<span class="badge">${esc(r.disposition)}</span>` : ''}${r.conversation ? ' <span class="badge good">conversation</span>' : ''}${answeredBadge(r)}</td>
+        <td class="num">${dur(r.talk_sec)}</td>
+        <td style="min-width:260px">${signed[r.recording_path] ? `<audio class="rec" controls preload="none" src="${esc(signed[r.recording_path])}"></audio>` : ''}
+          ${r.transcript ? `<details class="tx"><summary class="small">Transcript · ${esc(TX_SOURCE[r.transcript_source] || r.transcript_source || 'Coco')}</summary><div class="tx-body">${esc(r.transcript)}</div></details>` : r.recording_path ? '<span class="small muted">Transcript on its way…</span>' : ''}
+          ${isMgr() && r.recording_path ? `<div class="tx-row"><button class="btn dark tx-btn" data-vredo="${r.id}">${r.transcript ? 'Re-transcribe' : 'Transcribe now'}</button><span class="small muted tx-msg"></span></div>` : ''}</td></tr>`).join('')
+        || '<tr><td colspan="7" class="empty">No Vici calls in this period</td></tr>'}</tbody></table>`;
+    $('#vtable').querySelectorAll('[data-vredo]').forEach((b) => b.addEventListener('click', () => requestTranscript('vici', b.dataset.vredo, b)));
+  };
+  let timer;
+  $('#vsearch').addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(load, 300); });
+  $('#vcsv').addEventListener('click', () => downloadCsv(rows, `coco-vici-${rangeFile()}.csv`,
+    ['started_at', 'agent_name', 'phone', 'contact_name', 'lead_id', 'campaign', 'direction', 'dial_type', 'disposition', 'talk_sec', 'conversation', 'answered_by']));
+  await load();
+}
+
 // ---------- analysis (admin): rule-based checks from the database, reviewed by an admin ----------
 const RULES = {
   missed_call_not_returned: { label: 'Missed call / voicemail not returned', why: 'Return missed calls and voicemails quickly — customers who call usually want something now.' },
@@ -1156,10 +1210,10 @@ async function renderRecordings(view) {
       <div class="table-wrap"><table><thead><tr><th>When</th><th>Agent</th><th>Contact</th><th>Type</th><th class="num">Length</th><th>Status</th><th>By</th><th></th></tr></thead>
       <tbody>${jobs.map((j) => `<tr data-kind="${j.kind === 'recording' ? 'recording' : j.kind}" data-id="${j.ref_id}"${j.agent_id ? ` data-key="${j.agent_id}~${j.contact_id || ''}"` : ''}>
         <td>${j.occurred_at ? fmtTime(j.occurred_at) : '—'}</td><td>${esc(j.agent_name || '—')}</td><td>${esc(j.contact || '—')}</td>
-        <td>${j.kind === 'recording' ? 'call (Coco)' : j.kind === 'call' ? 'call (Google)' : 'voicemail'}</td><td class="num">${j.duration_sec ? dur(j.duration_sec) : ''}</td>
+        <td>${j.kind === 'recording' ? (j.source === 'vici' ? 'call (Vici)' : 'call (Coco)') : j.kind === 'call' ? 'call (Google)' : 'voicemail'}</td><td class="num">${j.duration_sec ? dur(j.duration_sec) : ''}</td>
         <td><span class="badge ${j.status === 'done' ? 'good' : j.status === 'failed' ? 'high' : ''}">${label[j.status] || j.status}</span>${j.error && j.status !== 'done' ? `<div class="small muted" style="white-space:normal;max-width:260px">${esc(j.error)}</div>` : ''}</td>
         <td class="small">${esc(TX_SOURCE[j.provider] || j.provider || '')}</td>
-        <td style="white-space:nowrap">${j.contact_id || j.agent_id ? '<button class="btn dark jOpen">Open</button> ' : ''}<button class="btn dark tx-btn jRedo">${j.status === 'done' ? 'Redo' : 'Now'}</button><span class="small muted tx-msg"></span></td></tr>`).join('')
+        <td style="white-space:nowrap">${j.source === 'vici' ? '<a class="btn dark" href="#/vici">Vici</a> ' : j.contact_id || j.agent_id ? '<button class="btn dark jOpen">Open</button> ' : ''}<button class="btn dark tx-btn jRedo">${j.status === 'done' ? 'Redo' : 'Now'}</button><span class="small muted tx-msg"></span></td></tr>`).join('')
         || '<tr><td colspan="8" class="empty">No recordings yet</td></tr>'}</tbody></table></div></div>`;
   updateTxBadge();
   $('#txAuto').addEventListener('change', (e) => { setTxPrefs({ auto: e.target.checked }); if (e.target.checked) browserTranscribeTick(); });
