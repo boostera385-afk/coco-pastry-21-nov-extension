@@ -220,6 +220,8 @@ const SOURCES = [
     pages: (mgr) => [['overview', 'Overview'], ...(mgr ? [['contacts', 'Contacts'], ['conversations', 'Conversations'], ['analysis', 'Analysis'], ['recordings', 'Recordings']] : [])] },
   { k: 'vici', label: 'Vici Dialer', home: 'vici',
     pages: (mgr) => [['vici', 'Overview'], ...(mgr ? [['analysis', 'Analysis']] : [])] },
+  // read-only side-by-side totals: each dialer still keeps its own data, this view only adds them up per agent
+  { k: 'all', label: 'All dialers', home: 'combined', pages: () => [['combined', 'Overview']] },
 ];
 const SHARED_PAGES = (mgr) => [...(mgr ? [['settings', 'Settings']] : []), ['extension', 'Extension'], ['account', 'Account']];
 let source = (() => { try { return localStorage.getItem('cocoSource') || 'gv'; } catch { return 'gv'; } })();
@@ -451,6 +453,7 @@ async function route(opts = {}) {
     else if (page === 'account') await renderAccount(view);
     else if (page === 'extension') await renderExtension(view);
     else if (page === 'vici') await renderVici(view);
+    else if (page === 'combined') await renderCombined(view);
     else await renderOverview(view);
   } catch (err) {
     if (seq !== routeSeq) return; // the user already moved to another page
@@ -1102,6 +1105,74 @@ function viciCards(issues) {
   });
   return [...by.values()].map((c) => ({ ...c, score: Math.max(0, 100 - 8 * c.counted.high - 4 * c.counted.medium - c.counted.low) }));
 }
+// ---------- all dialers: Google Voice + Vici per agent, side by side (agents using both are counted on each) ----------
+const COMB_COLS = [
+  ['agent_name', 'Agent', 'text'], ['uses', 'Uses', 'text'], ['total_calls', 'Total calls'], ['gv_calls', 'GV calls'], ['vici_calls', 'Vici calls'],
+  ['total_conv', 'Conversations'], ['gv_conv', 'GV conv.'], ['vici_conv', 'Vici conv.'], ['gv_texts', 'GV texts'],
+  ['total_talk', 'Talk time', 'hms'], ['gv_talk', 'GV talk', 'hms'], ['vici_talk', 'Vici talk', 'hms'],
+];
+let combSort = { k: 'total_calls', dir: -1 };
+async function renderCombined(view) {
+  const agent = isMgr() ? state.agent || null : state.agentId;
+  const args = { ...rangeArgs(), p_agent: agent };
+  const [gv, stats, vc] = await Promise.all([rpc('metrics_summary', args), rpc('team_stats', args).catch(() => []), rpc('vici_summary', args).catch(() => [])]);
+  const by = new Map();
+  const row = (id, name) => {
+    if (!by.has(id)) by.set(id, { agent_id: id, agent_name: name, gv_calls: 0, gv_conv: 0, gv_texts: 0, gv_talk: 0, vici_calls: 0, vici_conv: 0, vici_talk: 0 });
+    return by.get(id);
+  };
+  gv.forEach((r) => {
+    const x = row(r.agent_id, r.agent_name);
+    x.gv_calls = Number(r.outbound_calls || 0) + Number(r.inbound_calls || 0);
+    x.gv_conv = Number(r.conversations || 0);
+    x.gv_texts = Number(r.outbound_texts || 0) + Number(r.inbound_texts || 0);
+  });
+  stats.forEach((r) => { if (by.has(r.agent_id)) by.get(r.agent_id).gv_talk = Number(r.talk_sec || 0); });
+  vc.forEach((r) => {
+    const x = row(r.agent_id, r.agent_name);
+    x.vici_calls = Number(r.calls || 0); x.vici_conv = Number(r.conversations || 0); x.vici_talk = Number(r.talk_sec || 0);
+  });
+  const rows = [...by.values()].map((x) => {
+    const gvOn = x.gv_calls + x.gv_texts > 0; const vOn = x.vici_calls > 0;
+    return { ...x, total_calls: x.gv_calls + x.vici_calls, total_conv: x.gv_conv + x.vici_conv, total_talk: x.gv_talk + x.vici_talk,
+      uses: gvOn && vOn ? 'Both' : gvOn ? 'Google Voice' : vOn ? 'Vici' : '—' };
+  });
+  const sum = (k) => rows.reduce((a, r) => a + r[k], 0);
+  const both = rows.filter((r) => r.uses === 'Both').length;
+  const sorted = [...rows].sort((a, b) => {
+    const x = a[combSort.k]; const y = b[combSort.k];
+    return (typeof x === 'string' ? String(x).localeCompare(String(y)) : x - y) * combSort.dir;
+  });
+  const split = (a, b) => (a + b ? `<span class="split" title="Google Voice ${n(a)} · Vici ${n(b)}"><i style="width:${(100 * a) / (a + b)}%"></i></span>` : '');
+  const cell = (r, [k, , kind]) => {
+    if (k === 'agent_name') return `<b>${esc(r.agent_name)}</b>`;
+    if (k === 'uses') return r.uses === 'Both' ? '<span class="badge good">Both</span>' : `<span class="small">${esc(r.uses)}</span>`;
+    if (k === 'total_calls') return `<b>${n(r.total_calls)}</b>${split(r.gv_calls, r.vici_calls)}`;
+    return kind === 'hms' ? hms(r[k]) : n(r[k]);
+  };
+  view.innerHTML = `
+    <div class="section-title"><h2>${isMgr() ? 'All dialers' : 'My calls on every dialer'} · ${esc(periodLabel())}</h2><button class="btn dark" id="combCsv">Download (CSV)</button></div>
+    <p class="small muted">Google Voice and Vici Dialer added up per agent. Each dialer keeps its own data (pick it in the dropdown for details); an agent who uses both is counted on each.</p>
+    <div class="kpis">
+      ${kpi('Total calls', n(sum('total_calls')), `${n(sum('gv_calls'))} Google Voice · ${n(sum('vici_calls'))} Vici`, { hero: true, icon: ICON.callOut })}
+      ${kpi('Conversations', n(sum('total_conv')), `${n(sum('gv_conv'))} Google Voice · ${n(sum('vici_conv'))} Vici`, { tone: 'g', icon: ICON.talk })}
+      ${kpi('Talk time', hms(sum('total_talk')), `${hms(sum('gv_talk'))} Google Voice · ${hms(sum('vici_talk'))} Vici`, { tone: 'g', icon: ICON.clock })}
+      ${kpi('Texts', n(sum('gv_texts')), 'Google Voice (Vici has no texts)', { icon: ICON.textOut })}
+      ${isMgr() ? kpi('Agents on both', n(both), `${n(rows.filter((r) => r.uses === 'Google Voice').length)} Google Voice only · ${n(rows.filter((r) => r.uses === 'Vici').length)} Vici only`, { icon: ICON.check }) : ''}
+    </div>
+    <div class="card"><h3>${isMgr() ? 'Agents' : 'My numbers'}</h3><div class="table-wrap"><table>
+      <thead><tr>${COMB_COLS.map(([k, l, kind]) => `<th class="${kind === 'text' ? '' : 'num'} sort" data-k="${k}" tabindex="0">${l}${combSort.k === k ? (combSort.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`).join('')}</tr></thead>
+      <tbody>${sorted.map((r) => `<tr>${COMB_COLS.map((c) => `<td class="${c[2] === 'text' ? '' : 'num'}">${cell(r, c)}</td>`).join('')}</tr>`).join('')
+        || `<tr><td colspan="${COMB_COLS.length}" class="empty">No calls in this period</td></tr>`}</tbody></table></div>
+      <p class="small muted" style="margin:8px 0 0">Bar under Total calls: yellow = Google Voice share, green = Vici share.</p></div>`;
+  const sortBy = (k) => { combSort = { k, dir: combSort.k === k ? -combSort.dir : k === 'agent_name' || k === 'uses' ? 1 : -1 }; route({ quiet: true }); };
+  view.querySelectorAll('th.sort').forEach((th) => {
+    th.addEventListener('click', () => sortBy(th.dataset.k));
+    th.addEventListener('keydown', (e) => { if (e.key === 'Enter') sortBy(th.dataset.k); });
+  });
+  view.querySelector('#combCsv').addEventListener('click', () => downloadCsv(sorted, `coco-all-dialers-${rangeFile()}.csv`, COMB_COLS.map(([k]) => k)));
+}
+
 async function renderAnalysis(view) {
   const args = { ...rangeArgs(), p_agent: state.agent || null };
   const vici = source === 'vici';
