@@ -42,6 +42,24 @@
   toPage({ type: 'rec-gate', on: false });
   chrome.runtime.onMessage.addListener((m) => { if (m?.type === 'vici-rec-gate') toPage({ type: 'rec-gate', on: !!m.on, uid: m.uid || null }); });
 
+  // click-to-dial: the service worker asks the top frame; the page script dials with the agent's own session
+  const dials = new Map();
+  window.addEventListener('message', (ev) => {
+    if (ev.source !== window || ev.origin !== window.location.origin || ev.data?.source !== 'coco-vici' || ev.data.type !== 'dial-result') return;
+    const done = dials.get(ev.data.reqId);
+    if (done) { dials.delete(ev.data.reqId); done({ ok: !!ev.data.ok, method: ev.data.method || null, error: ev.data.error || null }); }
+  });
+  if (window === window.top) {
+    chrome.runtime.onMessage.addListener((m, _s, sendResponse) => {
+      if (m?.type !== 'vici-dial') return false;
+      const reqId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const timer = setTimeout(() => { dials.delete(reqId); sendResponse({ ok: false, error: 'Vici screen did not answer in time' }); }, 20000);
+      dials.set(reqId, (r) => { clearTimeout(timer); sendResponse(r); });
+      toPage({ type: 'dial', reqId, code: m.code, number: m.number });
+      return true; // answer comes asynchronously
+    });
+  }
+
   const pushRecConfig = async () => {
     if (!alive()) return;
     const st = await chrome.storage.local.get(['agentToken', 'paused', 'recordCalls']);

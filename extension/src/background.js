@@ -186,6 +186,7 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
         // tell every frame of that tab (the browser phone may be an iframe) to start/stop this call's recording
         if (sender.tab?.id >= 0) chrome.tabs.sendMessage(sender.tab.id, { type: 'vici-rec-gate', on: msg.on, uid: msg.uid }).catch(() => {});
         break;
+      case 'vici-dial': return reply(await viciDial(msg.phone));
       case 'vici-sample': await onViciSample(msg.sample); break;
       case 'vici-diag': await set({ viciDiag: msg.diag }); break;
       case 'vici-rec-diag': {
@@ -664,4 +665,30 @@ async function syncVici() {
   } finally {
     viciSyncing = 0;
   }
+}
+
+// ---------- click-to-dial (dashboard -> this browser's Vici agent screen) ----------
+/** US/Canada numbers only (what the Vici campaigns dial): '+1 (307) 555-0142' -> { code: '1', number: '3075550142' }. */
+export function dialTarget(raw) {
+  const s = String(raw || '').trim();
+  if (/^\+(?!1)/.test(s)) return null;
+  const d = s.replace(/\D/g, '');
+  const n = d.length === 11 && d[0] === '1' ? d.slice(1) : d;
+  return /^[2-9]\d{2}[2-9]\d{6}$/.test(n) ? { code: '1', number: n } : null;
+}
+let lastDialAt = 0;
+async function viciDial(phone) {
+  const t = dialTarget(phone);
+  if (!t) return { ok: false, error: 'Not a valid US/Canada number' };
+  const st = await get(['agentToken', 'paused']);
+  if (!st.agentToken) return { ok: false, error: 'Extension not connected' };
+  if (st.paused) return { ok: false, error: 'Tracking is paused — resume first' };
+  if (Date.now() - lastDialAt < 5000) return { ok: false, error: 'Wait a few seconds between dials' };
+  const tabs = await chrome.tabs.query({ url: VICI_TABS }).catch(() => []);
+  const tab = tabs.find((x) => /\/agc\/vicidial\.php/i.test(x.url || '')) || tabs[0];
+  if (!tab) return { ok: false, error: 'Open the Vici agent screen in this browser and log in' };
+  lastDialAt = Date.now();
+  const r = await chrome.tabs.sendMessage(tab.id, { type: 'vici-dial', ...t }, { frameId: 0 }).catch((e) => ({ ok: false, error: String(e?.message || e) }));
+  if (r?.ok) { await chrome.tabs.update(tab.id, { active: true }).catch(() => {}); await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {}); }
+  return r || { ok: false, error: 'Vici screen did not answer — reload it' };
 }

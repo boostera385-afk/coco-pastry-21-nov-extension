@@ -157,6 +157,46 @@
     };
   }
 
+  // ---------- click-to-dial (asked by the Coco dashboard through the extension) ----------
+  // 1) Vici Agent API external_dial with the agent's OWN logged-in session (POST, same origin; the password never
+  //    leaves this page). Needs "Agent API Access" on the Vici user. 2) Fallback: the screen's own manual-dial box.
+  async function dial(code, number) {
+    if (S.call || S.live) return { ok: false, error: 'A call is live — finish it first' };
+    const u = viciUser();
+    if (!u) return { ok: false, error: 'Log in to the Vici agent screen first' };
+    S.dialed = { at: Date.now(), phone: phoneOf(code, number) };
+    let apiErr = null;
+    const pass = g('pass');
+    if (typeof pass === 'string' && pass) {
+      try {
+        const body = new URLSearchParams({ source: 'coco', user: u, pass, agent_user: u, function: 'external_dial', value: number,
+          phone_code: code, search: 'YES', preview: 'NO', focus: 'YES' });
+        const r = await F.call(window, '/agc/api.php', { method: 'POST', body, credentials: 'same-origin' });
+        const t = (await r.text()).trim();
+        if (/^SUCCESS/i.test(t)) return { ok: true, method: 'api' };
+        apiErr = t.replace(/pass=\S+/gi, '').slice(0, 160) || `HTTP ${r.status}`;
+      } catch (e) { apiErr = String(e?.message || e).slice(0, 120); }
+    }
+    const fn = g('NeWManuaLDiaLCalLSubmiT');
+    const f = document.forms?.vicidial_form?.elements;
+    if (typeof fn === 'function' && f?.MDPhonENumbeR) {
+      try {
+        f.MDPhonENumbeR.value = number;
+        if (f.MDDiaLCodE) f.MDDiaLCodE.value = code;
+        fn.call(window, 'NOW');
+        return { ok: true, method: 'screen' };
+      } catch (e) { return { ok: false, error: `Vici screen dial failed: ${String(e?.message || e).slice(0, 100)}` }; }
+    }
+    S.dialed = null;
+    return { ok: false, error: apiErr ? `Vici refused: ${apiErr}` : 'This Vici screen has no manual dial — ask the admin to allow manual dial or Agent API access' };
+  }
+  window.addEventListener('message', (ev) => {
+    if (ev.source !== window || ev.data?.source !== 'coco-ext' || ev.data.type !== 'dial' || !top) return;
+    const { reqId, code, number } = ev.data;
+    if (!/^\d{1,3}$/.test(String(code)) || !/^\d{7,15}$/.test(String(number))) { post({ type: 'dial-result', reqId, ok: false, error: 'bad number' }); return; }
+    dial(String(code), String(number)).then((r) => post({ type: 'dial-result', reqId, ...r }), (e) => post({ type: 'dial-result', reqId, ok: false, error: String(e) }));
+  });
+
   // diagnostics for the dashboard (counts + which screen variables exist; no lead data)
   if (top) setInterval(() => post({ type: 'diag', diag: { actions: S.actions, globals: S.globals, live: S.live, user: viciUser(), page: location.pathname.slice(0, 60) } }), 30e3);
   window.addEventListener('pagehide', () => { if (S.call) endCall(); });

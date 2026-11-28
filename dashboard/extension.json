@@ -1,12 +1,20 @@
 {
-  "version": "0.10.0",
-  "released": "2026-11-28T06:08:34.043Z",
+  "version": "0.11.0",
+  "released": "2026-11-28T06:19:00.825Z",
   "download": "/downloads/coco-voice-extension.zip",
-  "versioned": "/downloads/coco-voice-extension-0.10.0.zip",
-  "size": 58899,
-  "sha256": "bf7eac61b7f07187e1ea3a0d2bf8780071a98c63d76686584f60f8df15de44a5",
+  "versioned": "/downloads/coco-voice-extension-0.11.0.zip",
+  "size": 61637,
+  "sha256": "615c4a9d45ab36062e1e028e680b63a4f786b4d9794292726db703494fd8a1d9",
   "min_chrome": "116",
   "history": [
+    {
+      "version": "0.11.0",
+      "released": "2026-11-28T06:19:00.825Z",
+      "notes": [
+        "Click-to-dial: 'Dial in Vici' and 'Call back' on the dashboard dial on your logged-in Vici screen (no Vici password in Coco; DNC numbers blocked)",
+        "Vici Dialer calls tracked and recorded, kept separate from Google Voice"
+      ]
+    },
     {
       "version": "0.10.0",
       "released": "2026-11-28T06:08:34.043Z",

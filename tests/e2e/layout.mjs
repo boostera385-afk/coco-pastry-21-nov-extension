@@ -18,7 +18,7 @@ const URL_ = env.SUPABASE_URL;
 const ANON = fs.readFileSync(path.join(DASH, 'config.js'), 'utf8').match(/eyJ[^']+/)[0];
 const PORT = 9334; const WEB = 5599;
 const WIDTHS = [1400, 960, 760, 390];
-const PAGES = ['overview', 'contacts', 'conversations', 'analysis', 'recordings', 'settings', 'extension', 'account'];
+const PAGES = ['overview', 'vici', 'contacts', 'conversations', 'analysis', 'recordings', 'settings', 'extension', 'account'];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function waitFor(fn, ms = 15000) { const end = Date.now() + ms; while (Date.now() < end) { try { const v = await fn(); if (v) return v; } catch { /* retry */ } await sleep(250); } return null; }
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json' };

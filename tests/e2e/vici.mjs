@@ -63,7 +63,7 @@ const rpc = async (jwt, fn, body) => {
 const PAGE = `<!doctype html><html><head><title>mock vici</title></head><body><h1>Mock Vici agent screen</h1>
 <form name="vicidial_form"><input name="lead_id"><input name="uniqueid"><input name="phone_code"><input name="phone_number">
 <input name="first_name"><input name="last_name"></form><script>
-  var VD_live_customer_call = 0, auto_dial_level = 1, campaign = 'E2ECAMP', user = '8001', inOUT = 'OUT', VDCL_group_id = '';
+  var VD_live_customer_call = 0, auto_dial_level = 1, campaign = 'E2ECAMP', user = '8001', pass = 'AGENTPW', inOUT = 'OUT', VDCL_group_id = '';
   async function phone() {
     const f = document.createElement('iframe'); f.srcdoc = '<p>caller</p>'; document.body.appendChild(f);
     await new Promise((r) => f.addEventListener('load', r, { once: true }));
@@ -96,6 +96,18 @@ const PAGE = `<!doctype html><html><head><title>mock vici</title></head><body><h
   phone();
 </script></body></html>`;
 
+// Mock Coco dashboard page (same origin as the real one, so the extension's dashboard link script runs on it).
+const DASH = `<!doctype html><html><head><title>mock dash</title></head><body><script>
+  window.__hello = null;
+  window.addEventListener('message', (e) => { if (e.data?.source === 'coco-ext-dash' && e.data.type === 'hello') window.__hello = e.data; });
+  window.__dial = (phone) => new Promise((res) => {
+    const reqId = String(Math.random());
+    window.addEventListener('message', (e) => { if (e.data?.source === 'coco-ext-dash' && e.data.type === 'dial-result' && e.data.reqId === reqId) res(e.data); });
+    window.postMessage({ source: 'coco-dash', type: 'dial', reqId, phone }, location.origin);
+  });
+  setTimeout(() => window.postMessage({ source: 'coco-dash', type: 'ping' }, location.origin), 300);
+</script></body></html>`;
+
 async function browserPart(token, agentId, adminJwt) {
   created.userDir = fs.mkdtempSync(path.join(os.tmpdir(), 'coco-vici-'));
   created.chrome = spawn(findChromium(), [
@@ -116,9 +128,11 @@ async function browserPart(token, agentId, adminJwt) {
     if (m.method !== 'Fetch.requestPaused') return;
     const { requestId, request } = m.params;
     seenReq.push(`${request.url} ${request.postData || ''}`);
-    const html = /vicidial\.php/.test(request.url);
+    const dash = /coco-voice-dashboard\.vercel\.app/.test(request.url);
+    const html = dash || /vicidial\.php/.test(request.url);
+    const text = dash ? DASH : html ? PAGE : /api\.php/.test(request.url) ? 'SUCCESS: external_dial function set - 8001|3075550199' : 'OK';
     await cdp.send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'Content-Type', value: html ? 'text/html' : 'text/plain' }],
-      body: Buffer.from(html ? PAGE : 'OK').toString('base64') }, m.sessionId).catch(() => {});
+      body: Buffer.from(text).toString('base64') }, m.sessionId).catch(() => {});
   });
   const { targetId: optId } = await cdp.send('Target.createTarget', { url: `chrome-extension://${extId}/options/options.html` });
   const optS = await cdp.attach(optId);
@@ -178,6 +192,27 @@ async function browserPart(token, agentId, adminJwt) {
   const leaked = JSON.stringify(st).includes('TOPSECRET') || JSON.stringify(await sql(`select vici_health::text h from agents where id='${agentId}'`)).includes('TOPSECRET');
   check('Vici password never stored by the extension or sent to the server', !leaked);
   check('page requests were never blocked or changed (dispo request reached Vici)', seenReq.some((x) => /updateDISPO/.test(x) && /TOPSECRET/.test(x)));
+
+  // ---- click-to-dial from the dashboard ----
+  const { targetId: dashId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
+  const dashS = await cdp.attach(dashId);
+  await cdp.send('Fetch.enable', { patterns: [{ urlPattern: 'https://coco-voice-dashboard.vercel.app/*' }] }, dashS);
+  await cdp.send('Page.navigate', { url: 'https://coco-voice-dashboard.vercel.app/' }, dashS);
+  const hello = await waitFor(() => cdp.eval(dashS, 'window.__hello'), 10000);
+  check('dashboard sees the extension: connected + Vici screen open', hello?.connected === true && hello?.viciOpen === true, JSON.stringify(hello));
+  const bad = await cdp.eval(dashS, "window.__dial('+44 20 7946 0000')");
+  check('non US/Canada number refused', bad?.ok === false && /US\/Canada/.test(bad.error || ''), JSON.stringify(bad));
+  const before = seenReq.length;
+  const dialed = await cdp.eval(dashS, "window.__dial('+1 (307) 555-0199')");
+  check('click-to-dial succeeds through the Vici Agent API', dialed?.ok === true && dialed.method === 'api', JSON.stringify(dialed));
+  const apiReq = seenReq.slice(before).find((x) => /\/agc\/api\.php/.test(x));
+  const q = new URLSearchParams((apiReq || '').split(' ').slice(1).join(' '));
+  check('Agent API call: external_dial, number, agent 8001, POST body (password not in URL)', q.get('function') === 'external_dial' && q.get('value') === '3075550199'
+    && q.get('agent_user') === '8001' && !/AGENTPW/.test((apiReq || '').split(' ')[0]), apiReq);
+  const again = await cdp.eval(dashS, "window.__dial('+13075550199')");
+  check('second dial within 5 s is held back (no double dials)', again?.ok === false && /Wait/.test(again.error || ''), JSON.stringify(again));
+  const st2 = await store();
+  check('dashboard never received a Vici password', !JSON.stringify([hello, dialed, again]).includes('AGENTPW') && !JSON.stringify(st2).includes('AGENTPW'));
   cdp.close();
   return row;
 }
@@ -194,6 +229,11 @@ async function dashboardPart(agentId, adminJwt, agentJwt, row) {
   check('agent sees own Vici calls but no recordings/transcripts', own?.length === 1 && !own[0].recording_path && !own[0].transcript, JSON.stringify(own).slice(0, 200));
   const direct = await fetch(`${URL_}/rest/v1/vici_calls?select=id`, { headers: { apikey: ANON, Authorization: `Bearer ${agentJwt}` } }).then((r) => r.json());
   check('agent cannot read the vici_calls table directly', Array.isArray(direct) && direct.length === 0, JSON.stringify(direct).slice(0, 120));
+  const chk = await rpc(agentJwt, 'vici_dial_check', { p_phone: '(307) 555-0142' });
+  check('dial check: agent sees last Vici disposition for the number (SALE), not DNC', chk?.[0]?.dnc === false && chk[0].last_disposition === 'SALE', JSON.stringify(chk));
+  await sql(`update vici_calls set disposition = 'DNC' where agent_id='${agentId}'`);
+  const chk2 = await rpc(adminJwt, 'vici_dial_check', { p_phone: '+13075550142' });
+  check('dial check: number marked DNC in Vici is blocked', chk2?.[0]?.dnc === true, JSON.stringify(chk2));
   const gvSum = await rpc(adminJwt, 'metrics_summary', { p_from: todayKey, p_to: todayKey, p_agent: agentId });
   check('Google Voice overview shows 0 calls for this agent (not mixed)', Number(gvSum?.[0]?.outbound_calls ?? 0) === 0 && Number(gvSum?.[0]?.outbound_total ?? 0) === 0, JSON.stringify(gvSum).slice(0, 200));
 }

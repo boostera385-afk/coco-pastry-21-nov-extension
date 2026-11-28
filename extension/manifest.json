@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Coco Voice Tracker",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Counts Google Voice and Vici Dialer activity (kept separate), records calls and syncs them to your team's Coco Voice dashboard.",
   "minimum_chrome_version": "116",
   "icons": {
@@ -87,6 +87,15 @@
       ],
       "run_at": "document_start",
       "all_frames": true
+    },
+    {
+      "matches": [
+        "https://coco-voice-dashboard.vercel.app/*"
+      ],
+      "js": [
+        "src/dashlink.js"
+      ],
+      "run_at": "document_idle"
     }
   ],
   "side_panel": {

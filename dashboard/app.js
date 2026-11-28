@@ -846,6 +846,43 @@ async function renderContacts(view) {
 
 // ---------- Vici Dialer: its own numbers, never mixed with Google Voice ----------
 const DIAL_TYPE = { manual: 'manual dial', auto: 'auto dial', inbound: 'inbound', unknown: '—' };
+
+// Click-to-dial: the Coco extension in THIS browser dials on its Vici agent screen (no Vici password in the dashboard).
+const ext = { present: false, connected: false, viciOpen: false, version: null };
+const dialWaits = new Map();
+window.addEventListener('message', (ev) => {
+  if (ev.source !== window || ev.origin !== location.origin || ev.data?.source !== 'coco-ext-dash') return;
+  const d = ev.data;
+  if (d.type === 'hello') {
+    Object.assign(ext, { present: true, connected: !!d.connected, viciOpen: !!d.viciOpen && !d.paused, version: d.version });
+    document.querySelectorAll('[data-dial]').forEach(setDialBtn);
+  } else if (d.type === 'dial-result') dialWaits.get(d.reqId)?.(d);
+});
+window.postMessage({ source: 'coco-dash', type: 'ping' }, location.origin);
+const dialHint = () => (!ext.present ? 'Install/enable the Coco extension in this browser to dial from here'
+  : !ext.connected ? 'Connect the Coco extension (paste the token) to dial'
+    : !ext.viciOpen ? 'Open the Vici agent screen in this browser (logged in) to dial' : 'Dial this number on your Vici agent screen');
+function setDialBtn(b) { b.disabled = !ext.viciOpen; b.title = dialHint(); }
+const US_PHONE = (raw) => { const s = String(raw || '').trim(); if (/^\+(?!1)/.test(s)) return null; const d = s.replace(/\D/g, ''); const x = d.length === 11 && d[0] === '1' ? d.slice(1) : d; return /^[2-9]\d{2}[2-9]\d{6}$/.test(x) ? `+1${x}` : null; };
+async function viciDial(raw, btn) {
+  const phone = US_PHONE(raw);
+  if (!phone) return toast('Enter a valid US/Canada number');
+  if (!ext.viciOpen) return toast(dialHint());
+  if (btn) btn.disabled = true;
+  try {
+    const [chk] = (await rpc('vici_dial_check', { p_phone: phone })) || [];
+    if (chk?.dnc) return toast(`${phone} is marked Do-Not-Call in Vici — not dialed`);
+    const last = chk?.last_call_at ? `\nLast Vici call ${ago(chk.last_call_at)}${chk.last_disposition ? ` (${chk.last_disposition})` : ''} · ${chk.calls_today} today.` : '';
+    if (!confirm(`Dial ${phone} on your Vici agent screen?${last}`)) return;
+    const reqId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const r = await new Promise((res) => {
+      const t = setTimeout(() => { dialWaits.delete(reqId); res({ ok: false, error: 'The extension did not answer — reload this page' }); }, 25000);
+      dialWaits.set(reqId, (x) => { clearTimeout(t); dialWaits.delete(reqId); res(x); });
+      window.postMessage({ source: 'coco-dash', type: 'dial', reqId, phone }, location.origin);
+    });
+    toast(r.ok ? `Dialing ${phone} in Vici…` : `Not dialed: ${r.error}`);
+  } catch (e) { toast(`Not dialed: ${e.message || e}`); } finally { if (btn) setDialBtn(btn); }
+}
 async function renderVici(view) {
   const agent = isMgr() ? state.agent || null : state.agentId;
   const args = { ...rangeArgs(), p_agent: agent };
@@ -854,7 +891,8 @@ async function renderVici(view) {
     .reduce((o, k) => ({ ...o, [k]: team.reduce((s, r) => s + Number(r[k] || 0), 0) }), {});
   view.innerHTML = `
     <div class="section-title"><h2>Vici Dialer</h2>
-      <div class="row" style="align-items:center"><input id="vsearch" placeholder="Number, name, status${isMgr() ? ' or transcript word' : ''}" style="max-width:280px" aria-label="Search Vici calls"><button class="btn dark" id="vcsv">Download (CSV)</button></div></div>
+      <div class="row" style="align-items:center"><input id="vdial" placeholder="Number to dial" style="max-width:170px" aria-label="Number to dial in Vici" inputmode="tel"><button class="btn" id="vdialBtn" data-dial>Dial in Vici</button>
+        <input id="vsearch" placeholder="Number, name, status${isMgr() ? ' or transcript word' : ''}" style="max-width:280px" aria-label="Search Vici calls"><button class="btn dark" id="vcsv">Download (CSV)</button></div></div>
     <p class="small muted">Calls from the Vici agent screen, counted on their own — they are not part of the Google Voice numbers on Overview.</p>
     <div class="kpis">
       ${kpi('Vici calls', n(t.calls), `${n(t.manual)} manual · ${n(t.auto)} auto · ${n(t.inbound)} inbound`, { hero: true, icon: ICON.callOut })}
@@ -880,7 +918,7 @@ async function renderVici(view) {
       <thead><tr><th>When</th><th>Agent</th><th>Contact</th><th>Type</th><th>Status</th><th class="num">Talk</th><th>Recording &amp; transcript</th></tr></thead>
       <tbody>${rows.map((r) => `<tr>
         <td style="white-space:nowrap">${fmtTime(r.started_at)}</td><td>${esc(r.agent_name)}</td>
-        <td><b>${esc(r.contact_name || r.phone || '—')}</b>${r.contact_name && r.phone ? `<div class="small muted">${esc(r.phone)}</div>` : ''}${r.campaign ? `<div class="small muted">${esc(r.campaign)}${r.lead_id ? ` · lead ${esc(r.lead_id)}` : ''}</div>` : ''}</td>
+        <td><b>${esc(r.contact_name || r.phone || '—')}</b>${r.contact_name && r.phone ? `<div class="small muted">${esc(r.phone)}</div>` : ''}${US_PHONE(r.phone) && r.disposition?.toUpperCase() !== 'DNC' ? ` <button class="btn dark" data-dial="${esc(r.phone)}">Call back</button>` : ''}${r.campaign ? `<div class="small muted">${esc(r.campaign)}${r.lead_id ? ` · lead ${esc(r.lead_id)}` : ''}</div>` : ''}</td>
         <td class="small">${esc(DIAL_TYPE[r.dial_type] || r.dial_type || '—')}</td>
         <td>${r.disposition ? `<span class="badge">${esc(r.disposition)}</span>` : ''}${r.conversation ? ' <span class="badge good">conversation</span>' : ''}${answeredBadge(r)}</td>
         <td class="num">${dur(r.talk_sec)}</td>
@@ -889,7 +927,12 @@ async function renderVici(view) {
           ${isMgr() && r.recording_path ? `<div class="tx-row"><button class="btn dark tx-btn" data-vredo="${r.id}">${r.transcript ? 'Re-transcribe' : 'Transcribe now'}</button><span class="small muted tx-msg"></span></div>` : ''}</td></tr>`).join('')
         || '<tr><td colspan="7" class="empty">No Vici calls in this period</td></tr>'}</tbody></table>`;
     $('#vtable').querySelectorAll('[data-vredo]').forEach((b) => b.addEventListener('click', () => requestTranscript('vici', b.dataset.vredo, b)));
+    $('#vtable').querySelectorAll('[data-dial]').forEach((b) => { setDialBtn(b); b.addEventListener('click', () => viciDial(b.dataset.dial, b)); });
   };
+  setDialBtn($('#vdialBtn'));
+  $('#vdialBtn').addEventListener('click', (e) => viciDial($('#vdial').value, e.currentTarget));
+  $('#vdial').addEventListener('keydown', (e) => { if (e.key === 'Enter') viciDial($('#vdial').value, $('#vdialBtn')); });
+  window.postMessage({ source: 'coco-dash', type: 'ping' }, location.origin);
   let timer;
   $('#vsearch').addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(load, 300); });
   $('#vcsv').addEventListener('click', () => downloadCsv(rows, `coco-vici-${rangeFile()}.csv`,
