@@ -1,12 +1,19 @@
 {
-  "version": "0.13.2",
-  "released": "2026-11-28T12:06:55.746Z",
+  "version": "0.13.3",
+  "released": "2026-11-28T13:12:23.357Z",
   "download": "/downloads/coco-voice-extension.zip",
-  "versioned": "/downloads/coco-voice-extension-0.13.2.zip",
-  "size": 68734,
-  "sha256": "85d7119d0ff1c54344c14ba60f2a4f52ab54dcf7155beaeebb9d3e6c0f13b105",
+  "versioned": "/downloads/coco-voice-extension-0.13.3.zip",
+  "size": 68827,
+  "sha256": "eb43672974f47fd12571cdc7e621e96773eea1f0d537fcb33ee890c8c60a8a15",
   "min_chrome": "116",
   "history": [
+    {
+      "version": "0.13.3",
+      "released": "2026-11-28T13:12:23.357Z",
+      "notes": [
+        "Test Vici no longer shows a false 'server not reachable' while a sync is running"
+      ]
+    },
     {
       "version": "0.13.2",
       "released": "2026-11-28T12:06:55.746Z",

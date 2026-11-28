@@ -821,7 +821,9 @@ async function runViciTest() {
   }
   add(st.recordCalls !== false, 'Call recording on', 'Your admin turned recording off for you (calls are still counted)', true);
   await set({ viciHeartbeatPending: true, viciBackoffUntil: 0 });
-  const r = await syncVici();
+  let r = await syncVici();
+  // another sync was already on its way (a call just ended): wait for it, then check again — "busy" is not offline
+  for (let i = 0; i < 10 && r.error === 'busy'; i++) { await pause(1000); r = await syncVici(); }
   add(r.ok, 'Coco server reachable', `Sync failed: ${r.error || 'unknown'} — check your internet, then test again`);
   const result = { steps, ok: steps.every((x) => x.ok || x.warn), at: Date.now() };
   await set({ viciTest: result });
