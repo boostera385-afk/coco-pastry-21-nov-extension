@@ -1,12 +1,19 @@
 {
-  "version": "0.13.1",
-  "released": "2026-11-28T11:43:47.775Z",
+  "version": "0.13.2",
+  "released": "2026-11-28T12:06:55.746Z",
   "download": "/downloads/coco-voice-extension.zip",
-  "versioned": "/downloads/coco-voice-extension-0.13.1.zip",
-  "size": 68128,
-  "sha256": "eb14cbdfaf7ebb34c21de79cfeb4fbb4e1c7d2d7e8455ea0ffe071b8959948ea",
+  "versioned": "/downloads/coco-voice-extension-0.13.2.zip",
+  "size": 68734,
+  "sha256": "85d7119d0ff1c54344c14ba60f2a4f52ab54dcf7155beaeebb9d3e6c0f13b105",
   "min_chrome": "116",
   "history": [
+    {
+      "version": "0.13.2",
+      "released": "2026-11-28T12:06:55.746Z",
+      "notes": [
+        "Vici: dials that never connect are counted; a newer Coco takes over an open Vici screen after an update (recording works without re-login)"
+      ]
+    },
     {
       "version": "0.13.1",
       "released": "2026-11-28T11:43:47.775Z",

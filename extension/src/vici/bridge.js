@@ -15,11 +15,14 @@
     return btoa(bin);
   };
 
+  let recV = 0, pageV = 0;
   const onMessage = async (ev) => {
     if (!alive()) { window.removeEventListener('message', onMessage); return; }
     if (ev.source !== window || ev.origin !== window.location.origin) return;
     const d = ev.data;
     if (d?.source === 'coco-vici') {
+      if ((d.pv || 1) < pageV) return; // older page script left over from before an update
+      pageV = Math.max(pageV, d.pv || 1);
       if (d.type === 'event') send({ type: 'vici-event', event: d.event });
       else if (d.type === 'call-state') send({ type: 'vici-call-state', on: !!d.on, uid: d.uid });
       else if (d.type === 'sample') send({ type: 'vici-sample', sample: d.sample });
@@ -27,6 +30,9 @@
       return;
     }
     if (d?.source !== 'coco-rec') return;
+    // a newer recorder took over this frame (extension updated mid-shift): drop the older copy's output
+    if ((d.rv || 2) < recV) return;
+    recV = Math.max(recV, d.rv || 2);
     if (d.type === 'state') send({ type: 'rec-state', recording: !!d.recording });
     else if (d.type === 'diag') send({ type: 'vici-rec-diag', diag: d.diag });
     else if (d.type === 'recording' && d.blob instanceof Blob) {
@@ -56,7 +62,7 @@
       const reqId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const timer = setTimeout(() => { dials.delete(reqId); sendResponse({ ok: false, error: 'Vici screen did not answer in time' }); }, 20000);
       dials.set(reqId, (r) => { clearTimeout(timer); sendResponse(r); });
-      toPage({ type: 'dial', reqId, code: m.code, number: m.number });
+      toPage({ type: 'dial2', reqId, code: m.code, number: m.number });
       return true; // answer comes asynchronously
     });
   }

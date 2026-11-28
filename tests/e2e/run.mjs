@@ -388,6 +388,13 @@ async function main() {
   check('dashboard UI: Analysis page lists issues with Reviewed / Dismiss buttons', anRows >= 1 && await cdp.eval(dS, "!!document.querySelector('.aRev') && !!document.querySelector('.aDis')"), `rows ${anRows}`);
   const navText = await cdp.eval(dS, "document.getElementById('navLinks').textContent");
   check('dashboard UI: Contacts + Analysis in nav, no Claude/Reports page', !/Reports|coaching/i.test(navText) && /Contacts/.test(navText) && /Analysis/.test(navText), navText);
+  // dialer dropdown: Google Voice by default; Vici Dialer shows only its own pages and data, then back
+  check('dashboard UI: dialer dropdown defaults to Google Voice', await cdp.eval(dS, "document.getElementById('sourceSel').value") === 'gv');
+  await cdp.eval(dS, "const s = document.getElementById('sourceSel'); s.value = 'vici'; s.dispatchEvent(new Event('change')); true");
+  const viciNav = await waitFor(() => cdp.eval(dS, "location.hash === '#/vici' && document.getElementById('navLinks').textContent"), 10000);
+  check('dashboard UI: Vici Dialer view has its own pages (no Google Voice Contacts/Conversations)', /Overview/.test(viciNav || '') && /Analysis/.test(viciNav || '') && !/Contacts|Conversations/.test(viciNav || ''), viciNav);
+  await cdp.eval(dS, "const s = document.getElementById('sourceSel'); s.value = 'gv'; s.dispatchEvent(new Event('change')); true");
+  check('dashboard UI: back to Google Voice overview', await waitFor(() => cdp.eval(dS, "location.hash === '#/overview' && /Contacts/.test(document.getElementById('navLinks').textContent)"), 10000));
   await cdp.eval(dS, "location.hash = '#/conversations'; true");
   const convItems = await waitFor(() => cdp.eval(dS, "document.querySelectorAll('#clist .item').length"), 10000);
   check('dashboard UI: conversations page lists threads', convItems >= 4, `got ${convItems}`);

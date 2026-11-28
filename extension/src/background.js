@@ -255,8 +255,10 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
         const { viciRecDiag = {} } = await get('viciRecDiag');
         const fk = String(sender.frameId ?? 0);
         const isNew = !viciRecDiag[fk] || Date.now() - viciRecDiag[fk].at > 12 * 3600e3;
+        const phoneNow = msg.diag?.pcs > 0 && !(viciRecDiag[fk]?.pcs > 0);
         viciRecDiag[fk] = { ...msg.diag, url: (sender.url || '').split('?')[0].slice(0, 80), at: Date.now() };
         await set({ viciRecDiag });
+        if (phoneNow) await refreshStatus(); // browser phone just found: update "phone not seen yet" 
         // a frame that started late (phone frame loaded or allowed mid-call) gets the live-call state
         const { viciGate } = await get('viciGate');
         if (isNew && viciGate?.on && sender.tab?.id === viciGate.tab) chrome.tabs.sendMessage(sender.tab.id, { type: 'vici-rec-gate', on: true, uid: viciGate.uid }, { frameId: sender.frameId }).catch(() => {});

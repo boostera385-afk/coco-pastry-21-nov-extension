@@ -10,9 +10,11 @@
 // - Vici Dialer: the browser phone stays connected for the whole login (calls are bridged into it), so there a
 //   file starts/stops on Vici's own call events ("rec-gate" from the Vici bridge), one file per customer call.
 (() => {
-  const VERSION = 2;
-  // one recorder per page: a page hooked by an older copy keeps it until Voice is reloaded (never record twice)
-  if (window.__cocoRecorder) return;
+  const VERSION = 3;
+  const onGoogle = /(^|\.)google\.com$/.test(location.hostname);
+  // one recorder per page: a Voice page hooked by an older copy keeps it until Voice is reloaded (never record twice).
+  // On Vici (the phone stays open all shift) a newer copy takes over; the Vici bridge ignores the older copy's output.
+  if (window.__cocoRecorder && (onGoogle || window.__cocoRecorder >= VERSION)) return;
   window.__cocoRecorder = VERSION;
   const PC = window.RTCPeerConnection;
   if (!PC || !window.MediaRecorder || !window.AudioContext) return;
@@ -23,10 +25,10 @@
   const PART_BITRATE = 24000;
   let enabled = false;               // set by the content script (coco-ext / rec-config)
   // Off Google (Vici): record only while the dialer says a customer call is live. Safe default before the bridge speaks.
-  let gated = !/(^|\.)google\.com$/.test(location.hostname);
+  let gated = !onGoogle;
   let callOn = false;
   let gateTag = null;                // Vici call id, attached to the file
-  const post = (msg) => window.postMessage({ source: 'coco-rec', ...msg }, window.location.origin);
+  const post = (msg) => window.postMessage({ source: 'coco-rec', rv: VERSION, ...msg }, window.location.origin);
   const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16)));
   const diag = { pcs: 0, sessions: 0, files: 0, errors: 0, lastError: null };
   const report = () => post({ type: 'diag', diag: { ...diag, enabled } });

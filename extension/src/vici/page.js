@@ -5,10 +5,13 @@
 // Emits one event per change of a call (start, end, disposition) to the bridge; the server merges them per call.
 // Passwords (pass=, phone_pass=…) are removed before anything leaves this page.
 (() => {
-  if (window.__cocoVici) return;
-  window.__cocoVici = 1;
+  // a newer copy takes over an open Vici screen after an extension update (Vici logs out on reload);
+  // the bridge ignores the older copy's events, and only this version answers dial requests ('dial2')
+  const PV = 2;
+  if (window.__cocoVici >= PV) return;
+  window.__cocoVici = PV;
   const top = window === window.top;
-  const post = (msg) => window.postMessage({ source: 'coco-vici', ...msg }, window.location.origin);
+  const post = (msg) => window.postMessage({ source: 'coco-vici', pv: PV, ...msg }, window.location.origin);
   // any field named like a password (pass, orig_pass, phone_pass, VD_pass, pwd, secret, token…) never leaves this page
   const SECRET = /pass|pwd|secret|token/i;
 
@@ -88,7 +91,7 @@
   const emit = (stage, c, extra = {}) => post({ type: 'event', event: {
     stage, vici_uid: c.uid, ...c.info, started_at: new Date(c.startedAt).toISOString(),
     ended_at: c.endedAt ? new Date(c.endedAt).toISOString() : null,
-    talk_sec: c.endedAt ? Math.round((c.endedAt - c.startedAt) / 1000) : 0, disposition: c.disposition || null, ...extra,
+    talk_sec: c.noTalk ? 0 : c.endedAt ? Math.round((c.endedAt - c.startedAt) / 1000) : 0, disposition: c.disposition || null, ...extra,
   } });
 
   function startCall() {
@@ -110,6 +113,17 @@
     S.last = c; S.call = null; S.xhrLive = null; S.dialed = null;
   }
 
+  /** A dial that never reached a customer: counted as an attempt with 0 s talk, no recording. */
+  function attemptOnly() {
+    const x = S.xhrLive || {};
+    const info = snapshot();
+    if (x.phone) info.phone = x.phone;
+    if (!info.phone && !x.uniqueid) return;
+    const at = x.at || S.dialed?.at || Date.now();
+    const c = { uid: x.uniqueid || `try:${info.phone}:${at}`, startedAt: at, endedAt: Date.now(), noTalk: true, info: { ...info, dial_type: 'manual' } };
+    emit('start', c); emit('end', c);
+    S.last = c; S.dialed = null;
+  }
   function tick() {
     if (!top) return;
     const flag = g('VD_live_customer_call');
@@ -147,7 +161,12 @@
     } else if (action === 'manDiaLlogCaLL') {
       const stage = (p.get('stage') || '').toLowerCase();
       if (stage === 'start') S.xhrLive = { lead_id: p.get('lead_id'), uniqueid: p.get('uniqueid'), phone: phoneOf(p.get('phone_code'), p.get('phone_number')) };
-      if (stage === 'end') { if (S.call) endCall(); S.xhrLive = null; }
+      if (stage === 'start') S.xhrLive.at = Date.now();
+      if (stage === 'end') {
+        if (S.call) endCall();
+        else if (S.xhrLive || S.dialed) attemptOnly(); // dialed but never connected (hung up while ringing / failed)
+        S.xhrLive = null;
+      }
     } else if (action === 'updateDISPO') {
       const dispo = (p.get('dispo_choice') || p.get('status') || '').trim().slice(0, 30);
       const c = S.call || S.last;
@@ -217,7 +236,7 @@
     return { ok: false, error: apiErr ? `Vici refused: ${apiErr}` : 'This Vici screen has no manual dial — ask the admin to allow manual dial or Agent API access' };
   }
   window.addEventListener('message', (ev) => {
-    if (ev.source !== window || ev.data?.source !== 'coco-ext' || ev.data.type !== 'dial' || !top) return;
+    if (ev.source !== window || ev.data?.source !== 'coco-ext' || ev.data.type !== 'dial2' || !top) return;
     const { reqId, code, number } = ev.data;
     if (!/^\d{1,3}$/.test(String(code)) || !/^\d{7,15}$/.test(String(number))) { post({ type: 'dial-result', reqId, ok: false, error: 'bad number' }); return; }
     dial(String(code), String(number)).then((r) => post({ type: 'dial-result', reqId, ...r }), (e) => post({ type: 'dial-result', reqId, ok: false, error: String(e) }));

@@ -206,12 +206,48 @@ async function boot() {
     + state.agents.map((a) => `<option value="${a.id}">${esc(a.name)}${a.active ? '' : ' (inactive)'}</option>`).join('');
   $('#agentFilter').hidden = !isMgr();
 
-  const links = [['overview', 'Overview'], ['vici', 'Vici Dialer'], ...(isMgr() ? [['contacts', 'Contacts'], ['conversations', 'Conversations'], ['analysis', 'Analysis'], ['recordings', 'Recordings'], ['settings', 'Settings']] : []), ['extension', 'Extension'], ['account', 'Account']];
-  $('#navLinks').innerHTML = links.map(([k, l]) => `<a href="#/${k}" data-k="${k}">${l}</a>`).join('');
+  $('#sourceSel').innerHTML = SOURCES.map((x) => `<option value="${x.k}">${esc(x.label)}</option>`).join('');
+  renderNav();
   route();
   renderUpdateBanner().catch(() => {});
   showSetupGuide();
 }
+
+// ---------- dialer sources: one dropdown, each dialer has its own pages and data (never mixed) ----------
+// To add a dialer later: add an entry here (its pages + home page) and render functions for its pages.
+const SOURCES = [
+  { k: 'gv', label: 'Google Voice', home: 'overview',
+    pages: (mgr) => [['overview', 'Overview'], ...(mgr ? [['contacts', 'Contacts'], ['conversations', 'Conversations'], ['analysis', 'Analysis'], ['recordings', 'Recordings']] : [])] },
+  { k: 'vici', label: 'Vici Dialer', home: 'vici',
+    pages: (mgr) => [['vici', 'Overview'], ...(mgr ? [['analysis', 'Analysis']] : [])] },
+];
+const SHARED_PAGES = (mgr) => [...(mgr ? [['settings', 'Settings']] : []), ['extension', 'Extension'], ['account', 'Account']];
+let source = (() => { try { return localStorage.getItem('cocoSource') || 'gv'; } catch { return 'gv'; } })();
+const srcOf = () => SOURCES.find((x) => x.k === source) || SOURCES[0];
+/** The dialer that owns a page, or null when several dialers share it (Analysis) or it isn't a dialer page. */
+const pageSource = (page) => {
+  const own = SOURCES.filter((x) => x.pages(true).some(([k]) => k === page));
+  return own.length === 1 ? own[0].k : null;
+};
+const knownPage = (page) => SOURCES.some((x) => x.pages(true).some(([k]) => k === page)) || SHARED_PAGES(true).some(([k]) => k === page);
+function setSource(k) {
+  if (!SOURCES.some((x) => x.k === k)) return;
+  source = k;
+  try { localStorage.setItem('cocoSource', k); } catch { /* private window */ }
+  renderNav();
+}
+function renderNav() {
+  $('#sourceSel').value = srcOf().k;
+  const links = [...srcOf().pages(isMgr()), ...SHARED_PAGES(isMgr())];
+  $('#navLinks').innerHTML = links.map(([k, l]) => `<a href="#/${k}" data-k="${k}">${l}</a>`).join('');
+}
+$('#sourceSel').addEventListener('change', (e) => {
+  setSource(e.target.value);
+  const [, page] = location.hash.split('/');
+  // stay on a page every dialer has (Analysis, Settings…), otherwise open the new dialer's overview
+  const target = page && knownPage(page) && pageSource(page) === null && srcOf().pages(isMgr()).concat(SHARED_PAGES(isMgr())).some(([k]) => k === page) ? page : srcOf().home;
+  if (location.hash === `#/${target}`) route(); else location.hash = `#/${target}`;
+});
 
 function showLogin(text = '', signedInNoAccess = false) {
   $('#app').hidden = true;
@@ -386,27 +422,38 @@ $('#agentFilter').addEventListener('change', (e) => {
 });
 window.addEventListener('hashchange', route);
 
+let routeSeq = 0;
 async function route(opts = {}) {
   if (!state.role) return;
   computeRange();
   lastRender = Date.now();
   setLive(true);
-  const [, page = 'overview', arg] = location.hash.split('/');
+  let [, page, arg] = location.hash.split('/');
+  // a link into another dialer's page (bookmark, old link) switches the dropdown with it
+  const own = pageSource(page);
+  if (own && own !== source) setSource(own);
+  if (!page || !knownPage(page)) page = srcOf().home;
   document.querySelectorAll('#navLinks a').forEach((a) => a.classList.toggle('on', a.dataset.k === page));
   $('#filters').hidden = page === 'settings' || page === 'account' || page === 'extension';
-  const view = $('#view');
-  if (!opts.quiet) view.innerHTML = '<div class="empty">Loading…</div>';
+  // each render gets its own box: a slower earlier page can't write over this one (it fails quietly instead)
+  const seq = ++routeSeq;
+  const host = $('#view');
+  const view = document.createElement('div');
+  if (opts.quiet && host.firstElementChild) view.innerHTML = host.firstElementChild.innerHTML;
+  else view.innerHTML = '<div class="empty">Loading…</div>';
+  host.replaceChildren(view);
   try {
     if (page === 'conversations' && isMgr()) await renderConversations(view, arg);
     else if (page === 'contacts' && isMgr()) await renderContacts(view);
     else if (page === 'analysis' && isMgr()) await renderAnalysis(view);
     else if (page === 'recordings' && isMgr()) await renderRecordings(view);
     else if (page === 'settings' && isMgr()) await renderSettings(view);
-    else if (page === 'vici') await renderVici(view);
     else if (page === 'account') await renderAccount(view);
     else if (page === 'extension') await renderExtension(view);
+    else if (page === 'vici') await renderVici(view);
     else await renderOverview(view);
   } catch (err) {
+    if (seq !== routeSeq) return; // the user already moved to another page
     view.innerHTML = `<div class="card empty">Something went wrong: ${esc(err.message || err)}</div>`;
   }
 }
@@ -711,7 +758,7 @@ async function renderOverview(view) {
   const p = totals(prevRows);
   const talk = stats.reduce((s, r) => s + Number(r.talk_sec || 0), 0);
   const talkCalls = t.connected_calls + Math.max(0, t.inbound_calls - t.missed_calls - t.voicemails);
-  const openIssues = isMgr() ? (await rpc('analysis_issues', args)).filter((i) => i.status === 'open') : [];
+  const openIssues = isMgr() ? (await rpc('analysis_issues', args)).filter((i) => i.status === 'open' && !isViciIssue(i)) : [];
   const period = periodLabel();
   const canWeek = bucketOf() === 'day' && daily.length >= 14;
   const series = canWeek && trendMode === 'week' ? weekly(daily) : daily;
@@ -1041,11 +1088,28 @@ let anFilter = { status: 'open', severity: '', rule: '' };
 
 const scoreTone = (s) => (s >= 85 ? 'g' : s >= 60 ? 'y' : 'r');
 
+const isViciIssue = (i) => /^vici-/.test(i.issue_key || '');
+/** Vici scorecard from the Vici issues alone (same scoring as Google Voice: 100 − 8 high − 4 medium − 1 low). */
+function viciCards(issues) {
+  const by = new Map(state.agents.filter((a) => a.active !== false && (!state.agent || a.id === state.agent)).map((a) => [a.id, {
+    agent_id: a.id, agent_name: a.name, high_open: 0, medium_open: 0, low_open: 0, reviewed: 0, dismissed: 0, counted: { high: 0, medium: 0, low: 0 } }]));
+  issues.forEach((i) => {
+    const c = by.get(i.agent_id);
+    if (!c) return;
+    if (i.status === 'open') c[`${i.severity}_open`]++;
+    if (i.status === 'reviewed') c.reviewed++;
+    if (i.status === 'dismissed') c.dismissed++; else c.counted[i.severity]++;
+  });
+  return [...by.values()].map((c) => ({ ...c, score: Math.max(0, 100 - 8 * c.counted.high - 4 * c.counted.medium - c.counted.low) }));
+}
 async function renderAnalysis(view) {
   const args = { ...rangeArgs(), p_agent: state.agent || null };
-  const hasShifts = state.agents.some((a) => a.shift_start);
-  const [cards, baseIssues, shiftIssues] = await Promise.all([rpc('analysis_scorecard', args), rpc('analysis_issues', args),
+  const vici = source === 'vici';
+  const hasShifts = !vici && state.agents.some((a) => a.shift_start);
+  const [gvCards, allIssues, shiftIssues] = await Promise.all([vici ? [] : rpc('analysis_scorecard', args), rpc('analysis_issues', args),
     hasShifts ? rpc('shift_issues', { p_from: state.from, p_to: state.to, p_agent: state.agent || null }).catch(() => []) : []]);
+  const baseIssues = allIssues.filter((i) => isViciIssue(i) === vici);
+  const cards = vici ? viciCards(baseIssues) : gvCards;
   const issues = [...baseIssues, ...shiftIssues];
   const r = state.settings.analysis_rules || {};
   const counts = {};
@@ -1056,12 +1120,19 @@ async function renderAnalysis(view) {
 
   view.innerHTML = `
     <div class="section-title"><h2>Analysis</h2>
-      <span class="small">Rule-based checks from Voice activity · targets: reply ${r.reply_target_min ?? 15} min · call back ${r.callback_target_min ?? 60} min${hasShifts ? ` · shift: late ${r.late_start_min ?? 15} min, idle ${r.idle_gap_min ?? 60} min` : ''} · change in Settings</span></div>
+      <span class="small">${vici ? `Rule-based checks from Vici Dialer calls: very short calls, Do Not Call numbers, over-dialing, manual dials in quiet hours (${esc(r.quiet_start || '21:00')}–${esc(r.quiet_end || '08:00')}) · change in Settings</span></div>` : `Rule-based checks from Google Voice activity · targets: reply ${r.reply_target_min ?? 15} min · call back ${r.callback_target_min ?? 60} min${hasShifts ? ` · shift: late ${r.late_start_min ?? 15} min, idle ${r.idle_gap_min ?? 60} min` : ''} · change in Settings</span></div>`}
 
     <div class="kpis">${cards.map((c) => kpi(esc(c.agent_name), `${c.score}<span class="small"> /100</span>`,
       `${n(c.high_open)} high · ${n(c.medium_open)} medium · ${n(c.low_open)} low open`, { tone: scoreTone(c.score), icon: ICON.check })).join('') || '<div class="empty">No active agents</div>'}</div>
 
-    <div class="card"><h3>Agent scorecard</h3>
+    ${vici ? `<div class="card"><h3>Agent scorecard · Vici Dialer</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Agent</th><th class="num">Score</th><th class="num">High open</th><th class="num">Medium open</th><th class="num">Low open</th><th class="num">Reviewed</th><th class="num">Dismissed</th></tr></thead>
+        <tbody>${cards.map((c) => `<tr><td>${esc(c.agent_name)}</td>
+          <td class="num"><b style="color:var(--${scoreTone(c.score) === 'g' ? 'green' : scoreTone(c.score) === 'y' ? 'yellow' : 'red'})">${c.score}</b></td>
+          <td class="num">${n(c.high_open)}</td><td class="num">${n(c.medium_open)}</td><td class="num">${n(c.low_open)}</td><td class="num">${n(c.reviewed)}</td><td class="num">${n(c.dismissed)}</td></tr>`).join('')}</tbody></table></div>
+      <p class="small">Score = 100 − 8 per high, 4 per medium, 1 per low Vici issue in the period. Dismissed issues don't count. Google Voice is scored separately.</p>
+    </div>` : `<div class="card"><h3>Agent scorecard · Google Voice</h3>
       <div class="table-wrap"><table>
         <thead><tr><th>Agent</th><th class="num">Score</th><th class="num">Customer texts</th><th class="num">Replied on time</th><th class="num">Median reply</th>
           <th class="num">Missed calls</th><th class="num">Returned on time</th><th class="num">Opt-out violations</th><th class="num">Open issues</th><th class="num">Reviewed</th><th class="num">Dismissed</th></tr></thead>
@@ -1075,7 +1146,7 @@ async function renderAnalysis(view) {
           <td class="num">${n(Number(c.high_open) + Number(c.medium_open) + Number(c.low_open))}</td><td class="num">${n(c.reviewed)}</td><td class="num">${n(c.dismissed)}</td>
         </tr>`).join('')}</tbody></table></div>
       <p class="small">Score = 100 − 8 per high, 4 per medium, 1 per low issue in the period. Dismissed issues don't count; reviewed ones still do (they happened).</p>
-    </div>
+    </div>`}
 
     <div class="card">
       <div class="section-title"><h3>Issues to check</h3>
@@ -1333,7 +1404,7 @@ async function renderRecordings(view) {
     <div class="card"><h3>Search transcripts</h3>
       <div class="row"><input id="txQ" placeholder="Word or phrase, e.g. refund, price, cancel" style="max-width:420px" aria-label="Search transcripts"></div>
       <div id="txFound" class="table-wrap"></div>
-      <p class="small muted">Searches Google Voice and Vici call transcripts and voicemail text in the selected period${state.agent ? ' for the selected agent' : ''}.</p></div>
+      <p class="small muted">Searches Google Voice call transcripts and voicemail text in the selected period (Vici calls: search on the Vici Dialer page)${state.agent ? ' for the selected agent' : ''}.</p></div>
     <div class="card"><h3>Transcription jobs</h3>
       <div class="table-wrap"><table><thead><tr><th>When</th><th>Agent</th><th>Contact</th><th>Type</th><th class="num">Length</th><th>Status</th><th>By</th><th></th></tr></thead>
       <tbody>${jobs.map((j) => `<tr data-kind="${j.kind === 'recording' ? 'recording' : j.kind}" data-id="${j.ref_id}"${j.agent_id ? ` data-key="${j.agent_id}~${j.contact_id || ''}"` : ''}>
@@ -1368,7 +1439,7 @@ async function renderRecordings(view) {
     timer = setTimeout(async () => {
       const q = $('#txQ').value.trim();
       if (q.length < 2) { $('#txFound').innerHTML = ''; return; }
-      const found = await rpc('search_transcripts', { ...rangeArgs(), p_q: q, p_agent: state.agent || null });
+      const found = (await rpc('search_transcripts', { ...rangeArgs(), p_q: q, p_agent: state.agent || null })).filter((f) => f.kind !== 'vici');
       const re = new RegExp(escRe(esc(q)), 'gi');
       $('#txFound').innerHTML = `<table><tbody>${found.map((f) => `<tr class="click" ${f.kind === 'vici' ? `data-vici="${esc(f.contact || '')}"` : `data-key="${f.agent_id}~${f.contact_id || ''}"`}><td>${fmtTime(f.occurred_at)}</td><td>${esc(f.agent_name)}</td><td>${esc(f.contact || '—')}${f.kind === 'vici' ? ' <span class="badge">Vici</span>' : ''}</td>
         <td style="white-space:normal">${esc(f.snippet).replace(re, (m) => `<mark>${m}</mark>`)}</td></tr>`).join('') || '<tr><td class="empty">No matches</td></tr>'}</tbody></table>`;

@@ -100,6 +100,14 @@ const PAGE = `<!doctype html><html><head><title>mock vici</title></head><body><h
     await ajax('ACTION=updateDISPO&user=8001&pass=TOPSECRET&orig_pass=TOPSECRET&dispo_choice=SALE&lead_id=9001');
     document.title = 'call done';
   };
+  // a manual dial that never connects (hung up while ringing): counted as an attempt, nothing recorded
+  window.__tryDial = async () => {
+    await ajax('ACTION=manDiaLnextCaLL&phone_code=1&phone_number=3105550199');
+    await ajax('ACTION=manDiaLlogCaLL&stage=start&uniqueid=E2ETRY.1&lead_id=9002&phone_code=1&phone_number=3105550199');
+    await new Promise((r) => setTimeout(r, 2000));
+    await ajax('ACTION=manDiaLlogCaLL&stage=end&uniqueid=E2ETRY.1&lead_id=9002&phone_code=1&phone_number=3105550199');
+    document.title = 'try done';
+  };
   phone();
 </script></body></html>`;
 
@@ -158,12 +166,12 @@ async function browserPart(token, agentId, adminJwt) {
   const pageS = await cdp.attach(pageId);
   await cdp.send('Fetch.enable', { patterns: [{ urlPattern: 'https://dm26.callengine.org/*' }] }, pageS);
   await cdp.send('Page.navigate', { url: 'https://dm26.callengine.org/agc/vicidial.php' }, pageS);
-  check('Vici hook + recorder active on the agent screen', await waitFor(() => cdp.eval(pageS, 'window.__cocoVici === 1 && window.__cocoRecorder >= 1'), 10000));
+  check('Vici hook + recorder active on the agent screen', await waitFor(() => cdp.eval(pageS, 'window.__cocoVici >= 1 && window.__cocoRecorder >= 1'), 10000));
   check('browser phone connected (WebRTC up for the whole login)', await waitFor(() => cdp.eval(pageS, "document.title === 'phone ready'"), 15000));
   const login = await waitFor(async () => (await store()).viciStatus?.state === 'login', 10000);
   check('status before Vici login: "Log in on the Vici screen"', login, JSON.stringify((await store()).viciStatus));
   await cdp.eval(pageS, 'window.__login(); true');
-  const ready = await waitFor(async () => { const v = (await store()).viciStatus; return v?.state === 'ready' && v; }, 10000);
+  const ready = await waitFor(async () => { const v = (await store()).viciStatus; return v?.state === 'ready' && v.phone && v; }, 15000);
   check('after login: "Vici ready · user 8001" with the browser phone detected', ready?.text === 'Vici ready · user 8001' && ready.phone === true, JSON.stringify(ready));
   const panelText = await waitFor(() => cdp.eval(panelS, "document.getElementById('viciState').textContent.includes('8001') && document.getElementById('viciState').textContent"), 8000);
   check('side panel shows the ready state', /Vici ready/.test(panelText || ''), String(panelText));
@@ -240,6 +248,10 @@ async function browserPart(token, agentId, adminJwt) {
   check('second dial within 5 s is held back (no double dials)', again?.ok === false && /Wait/.test(again.error || ''), JSON.stringify(again));
   const st2 = await store();
   check('dashboard never received a Vici password', !JSON.stringify([hello, dialed, again]).includes('AGENTPW') && !JSON.stringify(st2).includes('AGENTPW'));
+  cdp.eval(pageS, 'window.__tryDial()').catch(() => {});
+  const tryRow = await waitFor(async () => { const [r] = await sql(`select * from vici_calls where agent_id='${agentId}' and vici_uid='E2ETRY.1'`); return r?.ended_at && r; }, 30000, 1000);
+  check('dial that never connected is counted (manual, 0 s talk, no recording)', tryRow && tryRow.phone === '+13105550199' && tryRow.talk_sec === 0 && tryRow.dial_type === 'manual' && !tryRow.recording_path, JSON.stringify(tryRow));
+  await sql(`delete from vici_calls where vici_uid='E2ETRY.1'`); // keep the later one-call checks exact
   cdp.close();
   return row;
 }
@@ -275,7 +287,7 @@ async function dashboardPart(agentId, adminJwt, agentJwt, row) {
   check('Analysis: calling a DNC number in Vici = opt-out ignored (high)', vi.some((i) => i.rule === 'opt_out_ignored' && i.severity === 'high' && i.contact === '+13075550142'), JSON.stringify(vi));
   check('Analysis: 3-second Vici call = very short call', vi.some((i) => i.rule === 'very_short_call'), JSON.stringify(vi));
   const sc = await rpc(adminJwt, 'analysis_scorecard', args);
-  check('scorecard counts the Vici issues', sc?.[0] && Number(sc[0].high_open) >= 1, JSON.stringify(sc).slice(0, 200));
+  check('Google Voice scorecard does not count Vici issues (kept separate)', sc?.[0] && Number(sc[0].high_open) === 0, JSON.stringify(sc).slice(0, 200));
   check('agent cannot see Vici analysis', ((await rpc(agentJwt, 'analysis_issues', args)) || []).length === 0);
   const found = await rpc(adminJwt, 'search_transcripts', { ...args, p_q: 'refund' });
   check('transcript search finds the Vici call', found?.some?.((f) => f.kind === 'vici' && f.contact === '+13075550142'), JSON.stringify(found).slice(0, 200));
