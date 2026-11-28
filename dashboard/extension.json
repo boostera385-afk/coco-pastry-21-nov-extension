@@ -1,12 +1,19 @@
 {
-  "version": "0.13.0",
-  "released": "2026-11-28T09:14:43.406Z",
+  "version": "0.13.1",
+  "released": "2026-11-28T11:43:47.775Z",
   "download": "/downloads/coco-voice-extension.zip",
-  "versioned": "/downloads/coco-voice-extension-0.13.0.zip",
-  "size": 67882,
-  "sha256": "609f0d70207db412d5a63897ddfd4d76cfc9d6e1f94d8ca5d19d7b3a71d4d278",
+  "versioned": "/downloads/coco-voice-extension-0.13.1.zip",
+  "size": 68128,
+  "sha256": "eb14cbdfaf7ebb34c21de79cfeb4fbb4e1c7d2d7e8455ea0ffe071b8959948ea",
   "min_chrome": "116",
   "history": [
+    {
+      "version": "0.13.1",
+      "released": "2026-11-28T11:43:47.775Z",
+      "notes": [
+        "Vici: records calls even when the browser phone connected before Coco (no re-login needed after an update)"
+      ]
+    },
     {
       "version": "0.13.0",
       "released": "2026-11-28T09:14:43.406Z",

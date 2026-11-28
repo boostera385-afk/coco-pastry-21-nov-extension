@@ -70,8 +70,13 @@ const PAGE = `<!doctype html><html><head><title>mock vici</title></head><body><h
     const f = document.createElement('iframe'); f.srcdoc = '<p>caller</p>'; document.body.appendChild(f);
     await new Promise((r) => f.addEventListener('load', r, { once: true }));
     const W = f.contentWindow;
+    // the agent's side is built outside Coco's hooks (like a ViciPhone that connected before Coco arrived):
+    // Coco can only find it through ViciPhone's own mySession (SIP.js)
+    const g = document.createElement('iframe'); g.srcdoc = '<p>pre</p>'; document.body.appendChild(g);
+    await new Promise((r) => g.addEventListener('load', r, { once: true }));
     const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const a = new RTCPeerConnection(); const b = new W.RTCPeerConnection();
+    const a = new g.contentWindow.RTCPeerConnection(); const b = new W.RTCPeerConnection();
+    window.mySession = { sessionDescriptionHandler: { peerConnection: a } };
     a.onicecandidate = (e) => e.candidate && b.addIceCandidate(e.candidate);
     b.onicecandidate = (e) => e.candidate && a.addIceCandidate(e.candidate);
     const ctx = new W.AudioContext(); const osc = ctx.createOscillator(); const dst = ctx.createMediaStreamDestination();

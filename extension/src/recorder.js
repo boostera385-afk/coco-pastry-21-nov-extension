@@ -249,4 +249,17 @@
   };
   window.addEventListener('pagehide', () => sessions.forEach((s) => s.stop()));
   setTimeout(report, 3000);
+
+  // Vici browser phone: it connects once at login and never touches the connection again, so a phone that was
+  // already connected when Coco arrived (extension updated or allowed mid-shift) is found through ViciPhone's own
+  // call (`mySession`, SIP.js). While a customer call is live, keep retrying the start (tracks or state may lag).
+  if (gated) {
+    setInterval(() => {
+      try {
+        const pc = window.mySession?.sessionDescriptionHandler?.peerConnection;
+        if (pc && typeof pc.getReceivers === 'function' && !sessions.has(pc) && pc.connectionState !== 'closed') session(pc);
+        if (callOn && enabled) sessions.forEach((s) => s.maybeStart());
+      } catch { /* never break the page */ }
+    }, 2000);
+  }
 })();
